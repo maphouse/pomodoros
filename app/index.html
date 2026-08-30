@@ -207,6 +207,8 @@ body {
   var audioCtx = null;
   var lastSummaryUpdate = 0;
   var overlayTimeout = null;
+  var doneTime = 0;
+  var doneInterval = null;
 
   function breakDuration() {
     return activeDurationMins === 50 ? 600 : 300;
@@ -265,12 +267,28 @@ body {
 
   // --- time overlay on tap ---
 
-  function showTimeOverlay() {
+  // Persistent = always shown, no auto-fade: paused, <=5min remaining, or
+  // the up-to-1hr overtime count-up after a full cycle completes.
+  function overlayState() {
     var r = getRemaining();
-    timeOverlay.textContent = fmt(r);
+    if (state === "done") {
+      var elapsed = doneTime ? Math.floor((Date.now() - doneTime) / 1000) : Infinity;
+      if (elapsed < 0) elapsed = 0;
+      if (elapsed <= 3600) return { persistent: true, text: "-" + fmt(elapsed) };
+      return { persistent: false, text: "" };
+    }
+    if (state === "paused") return { persistent: true, text: fmt(r) };
+    if (state === "running" && r <= 300) return { persistent: true, text: fmt(r) };
+    return { persistent: false, text: fmt(r) };
+  }
+
+  function showTimeOverlay() {
+    var ov = overlayState();
+    timeOverlay.textContent = ov.text;
     timeOverlay.classList.remove("fading");
     timeOverlay.classList.add("visible");
-    if (overlayTimeout) clearTimeout(overlayTimeout);
+    if (overlayTimeout) { clearTimeout(overlayTimeout); overlayTimeout = null; }
+    if (ov.persistent) return;
     overlayTimeout = setTimeout(function () {
       timeOverlay.classList.add("fading");
       timeOverlay.classList.remove("visible");
@@ -280,11 +298,25 @@ body {
 
   pieEl.addEventListener("click", showTimeOverlay);
 
+  function startDoneTick() {
+    stopDoneTick();
+    doneInterval = setInterval(function () {
+      if (state !== "done") { stopDoneTick(); return; }
+      render();
+      if (Date.now() - doneTime > 3600000) stopDoneTick();
+    }, 1000);
+  }
+
+  function stopDoneTick() {
+    if (doneInterval) { clearInterval(doneInterval); doneInterval = null; }
+  }
+
   function render() {
     var r = getRemaining();
+    var ov = overlayState();
 
-    if (state === "paused") {
-      timeOverlay.textContent = fmt(r);
+    if (ov.persistent) {
+      timeOverlay.textContent = ov.text;
       timeOverlay.classList.remove("fading");
       timeOverlay.classList.add("visible");
       if (overlayTimeout) { clearTimeout(overlayTimeout); overlayTimeout = null; }
@@ -292,7 +324,7 @@ body {
       timeOverlay.classList.add("fading");
       timeOverlay.classList.remove("visible");
     } else if (timeOverlay.classList.contains("visible")) {
-      timeOverlay.textContent = fmt(r);
+      timeOverlay.textContent = ov.text;
     }
 
     if (phase === "focus") {
@@ -400,6 +432,8 @@ body {
     handled[key] = true;
 
     state = "done";
+    doneTime = endTime;
+    startDoneTick();
     playBreakAlarm();
     showBanner("☕ ✓", "#3498db");
 
@@ -481,6 +515,8 @@ body {
     if (!p || !p.type) return;
 
     if (p.type === "start") {
+      stopDoneTick();
+      doneTime = 0;
       phase = "focus";
       state = "running";
       endTime = p.endTime;
@@ -504,6 +540,8 @@ body {
 
     } else if (p.type === "reset") {
       stopLocalTick();
+      stopDoneTick();
+      doneTime = 0;
       state = "idle";
       phase = "focus";
       if (p.durationMins) {
@@ -525,12 +563,16 @@ body {
       handled["b-" + p.breakEnd] = true;
       stopLocalTick();
       state = "done";
+      doneTime = p.breakEnd;
+      startDoneTick();
 
     } else if (p.type === "completed") {
       handled["f-" + p.endTime] = true;
       stopLocalTick();
       state = "done";
       completedCount++;
+      doneTime = p.endTime;
+      startDoneTick();
     }
 
     render();
