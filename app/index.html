@@ -1,0 +1,610 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Pomodoros</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: ui-monospace, "Cascadia Mono", "Roboto Mono", "Fira Mono", "Droid Sans Mono", monospace;
+  background: #000;
+  color: #eee;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+
+.duration-picker {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.dur-btn {
+  border: 2px solid #222;
+  border-radius: 20px;
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.dur-btn.active {
+  border-color: #e74c3c;
+  color: #eee;
+  background: rgba(231, 76, 60, 0.15);
+}
+
+.dur-btn:active { opacity: 0.7; }
+
+.pie {
+  position: relative;
+  width: min(90vw, calc(100vh - 220px));
+  aspect-ratio: 1;
+  margin-bottom: 12px;
+  cursor: pointer;
+  flex-shrink: 1;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.pie svg { width: 100%; height: 100%; }
+
+.time-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 2px;
+  color: #fff;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.time-overlay.visible { opacity: 1; transition: none; }
+.time-overlay.fading { opacity: 0; transition: opacity 1s ease; }
+
+.controls {
+  display: flex;
+  gap: 12px;
+}
+
+.controls button {
+  border: none;
+  border-radius: 50%;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  font-size: 22px;
+  line-height: 56px;
+  text-align: center;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.controls button:active { opacity: 0.7; }
+
+.btn-start { background: #e74c3c; color: #fff; }
+.btn-start.running { background: #c0392b; }
+.btn-start.breaking { background: #27ae60; }
+.btn-reset { background: #222; color: #aaa; }
+
+.done-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  text-align: center;
+  padding: 12px;
+  font-weight: 700;
+  font-size: 14px;
+  transform: translateY(-100%);
+  transition: transform 0.3s ease;
+  z-index: 10;
+}
+
+.done-banner.visible { transform: translateY(0); }
+
+.history {
+  margin-top: 16px;
+  font-size: 12px;
+  color: #666;
+  text-align: center;
+}
+
+.history strong { color: #aaa; }
+
+.footer {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  text-align: center;
+  padding: 10px 16px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  font-size: 11px;
+  color: #333;
+  letter-spacing: 0.3px;
+}
+</style>
+</head>
+<body>
+
+<div class="duration-picker" id="dur-picker">
+  <button class="dur-btn" data-mins="25">25 min</button>
+  <button class="dur-btn active" data-mins="50">50 min</button>
+</div>
+
+<div class="pie" id="pie">
+  <svg viewBox="0 0 260 260">
+    <path id="red-slice" fill="#e74c3c"/>
+    <path id="green-slice" fill="#2ecc71"/>
+  </svg>
+  <div class="time-overlay" id="time-overlay"></div>
+</div>
+
+<div class="controls">
+  <button class="btn-reset" id="btn-reset" aria-label="Reset">&#x21bb;</button>
+  <button class="btn-start" id="btn-start" aria-label="Start">&#x25b6;</button>
+</div>
+
+<div class="done-banner" id="banner"></div>
+
+<div class="history" id="history"></div>
+
+<div class="footer">Keep this window open to be notified when time is up.</div>
+
+<script src="webxdc.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var CX = 130, CY = 130, R = 115;
+  var PLAY = '<svg width="20" height="20" viewBox="0 0 20 20"><polygon points="4,2 18,10 4,18" fill="currentColor"/></svg>';
+  var PAUSE_ICON = '<svg width="20" height="20" viewBox="0 0 20 20"><rect x="3" y="2" width="5" height="16" rx="1" fill="currentColor"/><rect x="12" y="2" width="5" height="16" rx="1" fill="currentColor"/></svg>';
+
+  var redSlice = document.getElementById("red-slice");
+  var greenSlice = document.getElementById("green-slice");
+  var pieEl = document.getElementById("pie");
+  var timeOverlay = document.getElementById("time-overlay");
+  var startBtn = document.getElementById("btn-start");
+  var resetBtn = document.getElementById("btn-reset");
+  var banner = document.getElementById("banner");
+  var historyEl = document.getElementById("history");
+  var durPicker = document.getElementById("dur-picker");
+  var durBtns = durPicker.querySelectorAll(".dur-btn");
+
+  var focusDuration = 50 * 60;
+  var activeDurationMins = 50;
+  var state = "idle";
+  var phase = "focus";
+  var endTime = 0;
+  var pausedRemaining = focusDuration;
+  var completedCount = 0;
+  var handled = {};
+
+  var localInterval = null;
+  var audioCtx = null;
+  var lastSummaryUpdate = 0;
+  var overlayTimeout = null;
+
+  function breakDuration() {
+    return activeDurationMins === 50 ? 600 : 300;
+  }
+
+  function xy(angleDeg) {
+    var rad = (angleDeg - 90) * Math.PI / 180;
+    return [CX + R * Math.cos(rad), CY + R * Math.sin(rad)];
+  }
+
+  function sectorPath(startAngle, endAngle) {
+    var span = endAngle - startAngle;
+    if (span < 0.5) return "";
+    if (span >= 359.5) {
+      return "M" + CX + "," + (CY - R) +
+             "A" + R + "," + R + " 0 1,1 " + CX + "," + (CY + R) +
+             "A" + R + "," + R + " 0 1,1 " + CX + "," + (CY - R) + "Z";
+    }
+    var s = xy(startAngle);
+    var e = xy(endAngle);
+    var large = span > 180 ? 1 : 0;
+    return "M" + CX + "," + CY +
+           "L" + s[0].toFixed(2) + "," + s[1].toFixed(2) +
+           "A" + R + "," + R + " 0 " + large + ",1 " +
+           e[0].toFixed(2) + "," + e[1].toFixed(2) + "Z";
+  }
+
+  function fmt(s) {
+    if (s < 0) s = 0;
+    var m = Math.floor(s / 60);
+    var sec = s % 60;
+    return (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec;
+  }
+
+  function fmtMins(s) {
+    return Math.ceil(s / 60) + "min";
+  }
+
+  function getRemaining() {
+    if (state === "running") return Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
+    if (state === "done") return 0;
+    return pausedRemaining;
+  }
+
+  function setDuration(mins) {
+    focusDuration = mins * 60;
+    activeDurationMins = mins;
+    pausedRemaining = focusDuration;
+  }
+
+  function updateDurBtns() {
+    for (var i = 0; i < durBtns.length; i++) {
+      durBtns[i].classList.toggle("active", parseInt(durBtns[i].dataset.mins) === activeDurationMins);
+    }
+  }
+
+  // --- time overlay on tap ---
+
+  function showTimeOverlay() {
+    var r = getRemaining();
+    timeOverlay.textContent = fmt(r);
+    timeOverlay.classList.remove("fading");
+    timeOverlay.classList.add("visible");
+    if (overlayTimeout) clearTimeout(overlayTimeout);
+    overlayTimeout = setTimeout(function () {
+      timeOverlay.classList.add("fading");
+      timeOverlay.classList.remove("visible");
+      overlayTimeout = null;
+    }, 5000);
+  }
+
+  pieEl.addEventListener("click", showTimeOverlay);
+
+  function render() {
+    var r = getRemaining();
+
+    if (state === "paused") {
+      timeOverlay.textContent = fmt(r);
+      timeOverlay.classList.remove("fading");
+      timeOverlay.classList.add("visible");
+      if (overlayTimeout) { clearTimeout(overlayTimeout); overlayTimeout = null; }
+    } else if (timeOverlay.classList.contains("visible") && !overlayTimeout) {
+      timeOverlay.classList.add("fading");
+      timeOverlay.classList.remove("visible");
+    } else if (timeOverlay.classList.contains("visible")) {
+      timeOverlay.textContent = fmt(r);
+    }
+
+    if (phase === "focus") {
+      var fe;
+      if (state === "running") fe = 1 - r / focusDuration;
+      else if (state === "paused") fe = 1 - pausedRemaining / focusDuration;
+      else fe = 0;
+      redSlice.setAttribute("d", sectorPath(fe * 300, 300));
+      greenSlice.setAttribute("d", sectorPath(300, 360));
+    } else {
+      redSlice.setAttribute("d", "");
+      var bd = breakDuration();
+      var be;
+      if (state === "done") be = 1;
+      else if (state === "running") be = 1 - r / bd;
+      else if (state === "paused") be = 1 - pausedRemaining / bd;
+      else be = 0;
+      greenSlice.setAttribute("d", sectorPath(300 + be * 60, 360));
+    }
+
+    var active = state === "running" || state === "paused";
+    durPicker.style.opacity = active || phase === "break" ? "0.3" : "1";
+    durPicker.style.pointerEvents = active || phase === "break" ? "none" : "auto";
+
+    startBtn.classList.remove("running", "breaking");
+    if (state === "running" && phase === "focus") {
+      startBtn.innerHTML = PAUSE_ICON;
+      startBtn.classList.add("running");
+    } else if (state === "running" && phase === "break") {
+      startBtn.innerHTML = PAUSE_ICON;
+      startBtn.classList.add("breaking");
+    } else {
+      startBtn.innerHTML = PLAY;
+    }
+
+    if (completedCount > 0) {
+      historyEl.innerHTML = completedCount + " 🍅";
+    } else {
+      historyEl.textContent = "";
+    }
+  }
+
+  function updateSummary() {
+    var now = Date.now();
+    if (now - lastSummaryUpdate < 300000) return;
+    lastSummaryUpdate = now;
+    var r = getRemaining();
+    var text = phase === "focus"
+      ? "▶ " + fmtMins(r)
+      : "☕ " + fmtMins(r);
+    window.webxdc.sendUpdate({
+      payload: { type: "tick" },
+      summary: text
+    }, "");
+  }
+
+  function startLocalTick() {
+    stopLocalTick();
+    localInterval = setInterval(function () {
+      if (state !== "running") { stopLocalTick(); return; }
+      render();
+      updateSummary();
+      if (getRemaining() <= 0) {
+        stopLocalTick();
+        if (phase === "focus") onFocusExpired();
+        else onBreakExpired();
+      }
+    }, 250);
+  }
+
+  function stopLocalTick() {
+    if (localInterval) { clearInterval(localInterval); localInterval = null; }
+  }
+
+  function onFocusExpired() {
+    var key = "f-" + endTime;
+    if (handled[key]) return;
+    handled[key] = true;
+
+    completedCount++;
+    playFocusAlarm();
+    showBanner("✓", "#2ecc71");
+
+    var bd = breakDuration();
+    var be = Date.now() + bd * 1000;
+
+    window.webxdc.sendUpdate({
+      payload: { type: "focusComplete", focusEnd: endTime, breakEnd: be },
+      info: "✓",
+      summary: "☕ " + fmtMins(bd),
+      notify: { "*": "✓" }
+    }, "");
+
+    lastSummaryUpdate = Date.now();
+    phase = "break";
+    endTime = be;
+    state = "running";
+    startLocalTick();
+    render();
+  }
+
+  function onBreakExpired() {
+    var key = "b-" + endTime;
+    if (handled[key]) return;
+    handled[key] = true;
+
+    state = "done";
+    playBreakAlarm();
+    showBanner("☕ ✓", "#3498db");
+
+    window.webxdc.sendUpdate({
+      payload: { type: "breakComplete", breakEnd: endTime },
+      info: "☕ ✓",
+      summary: "🍅"
+    }, "");
+
+    render();
+  }
+
+  function showBanner(text, color) {
+    banner.textContent = text;
+    banner.style.background = color;
+    banner.style.color = "#000";
+    banner.classList.add("visible");
+    setTimeout(function () { banner.classList.remove("visible"); }, 4000);
+  }
+
+  function primeAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+    }
+  }
+
+  function playFocusAlarm() {
+    try {
+      primeAudio();
+      var beeps = [
+        { freq: 880, start: 0, dur: 0.15 },
+        { freq: 880, start: 0.25, dur: 0.15 },
+        { freq: 880, start: 0.5, dur: 0.15 },
+        { freq: 1100, start: 0.85, dur: 0.3 }
+      ];
+      var now = audioCtx.currentTime;
+      for (var i = 0; i < beeps.length; i++) {
+        var b = beeps[i];
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.type = "square";
+        osc.frequency.value = b.freq;
+        gain.gain.setValueAtTime(0.3, now + b.start);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + b.start + b.dur);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(now + b.start);
+        osc.stop(now + b.start + b.dur + 0.05);
+      }
+    } catch (e) {}
+  }
+
+  function playBreakAlarm() {
+    try {
+      primeAudio();
+      var notes = [
+        { freq: 523, start: 0, dur: 0.3 },
+        { freq: 392, start: 0.35, dur: 0.3 },
+        { freq: 330, start: 0.7, dur: 0.5 }
+      ];
+      var now = audioCtx.currentTime;
+      for (var i = 0; i < notes.length; i++) {
+        var n = notes[i];
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = n.freq;
+        gain.gain.setValueAtTime(0.25, now + n.start);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(now + n.start);
+        osc.stop(now + n.start + n.dur + 0.05);
+      }
+    } catch (e) {}
+  }
+
+  function applyUpdate(p) {
+    if (!p || !p.type) return;
+
+    if (p.type === "start") {
+      phase = "focus";
+      state = "running";
+      endTime = p.endTime;
+      if (p.durationMins) {
+        setDuration(p.durationMins);
+        updateDurBtns();
+      }
+      startLocalTick();
+
+    } else if (p.type === "pause") {
+      stopLocalTick();
+      state = "paused";
+      pausedRemaining = p.remaining;
+      if (p.phase) phase = p.phase;
+
+    } else if (p.type === "resume") {
+      state = "running";
+      endTime = p.endTime;
+      if (p.phase) phase = p.phase;
+      startLocalTick();
+
+    } else if (p.type === "reset") {
+      stopLocalTick();
+      state = "idle";
+      phase = "focus";
+      if (p.durationMins) {
+        setDuration(p.durationMins);
+        updateDurBtns();
+      }
+      pausedRemaining = focusDuration;
+      banner.classList.remove("visible");
+
+    } else if (p.type === "focusComplete") {
+      handled["f-" + p.focusEnd] = true;
+      completedCount++;
+      phase = "break";
+      state = "running";
+      endTime = p.breakEnd;
+      startLocalTick();
+
+    } else if (p.type === "breakComplete") {
+      handled["b-" + p.breakEnd] = true;
+      stopLocalTick();
+      state = "done";
+
+    } else if (p.type === "completed") {
+      handled["f-" + p.endTime] = true;
+      stopLocalTick();
+      state = "done";
+      completedCount++;
+    }
+
+    render();
+  }
+
+  for (var i = 0; i < durBtns.length; i++) {
+    durBtns[i].addEventListener("click", function () {
+      var mins = parseInt(this.dataset.mins);
+      setDuration(mins);
+      updateDurBtns();
+      window.webxdc.sendUpdate({
+        payload: { type: "reset", durationMins: mins },
+        summary: "🍅"
+      }, "");
+      render();
+    });
+  }
+
+  startBtn.addEventListener("click", function () {
+    primeAudio();
+
+    if (state === "running") {
+      var r = getRemaining();
+      window.webxdc.sendUpdate({
+        payload: { type: "pause", remaining: r, phase: phase },
+        summary: "⏸ " + fmtMins(r)
+      }, "");
+      applyUpdate({ type: "pause", remaining: r, phase: phase });
+
+    } else if (state === "paused") {
+      var secs = pausedRemaining;
+      var et = Date.now() + secs * 1000;
+      window.webxdc.sendUpdate({
+        payload: { type: "resume", endTime: et, phase: phase },
+        summary: (phase === "focus" ? "▶ " : "☕ ") + fmtMins(secs)
+      }, "");
+      lastSummaryUpdate = Date.now();
+      applyUpdate({ type: "resume", endTime: et, phase: phase });
+      showTimeOverlay();
+
+    } else {
+      var et = Date.now() + focusDuration * 1000;
+      var name = window.webxdc.selfName || "Someone";
+      window.webxdc.sendUpdate({
+        payload: { type: "start", endTime: et, durationMins: activeDurationMins },
+        info: name + ": " + activeDurationMins + "min",
+        summary: "▶ " + fmtMins(focusDuration)
+      }, "");
+      lastSummaryUpdate = Date.now();
+      applyUpdate({ type: "start", endTime: et, durationMins: activeDurationMins });
+      showTimeOverlay();
+    }
+  });
+
+  resetBtn.addEventListener("click", function () {
+    window.webxdc.sendUpdate({
+      payload: { type: "reset", durationMins: activeDurationMins },
+      summary: "🍅"
+    }, "");
+    applyUpdate({ type: "reset", durationMins: activeDurationMins });
+  });
+
+  window.webxdc.setUpdateListener(function (update) {
+    applyUpdate(update.payload);
+  }, 0);
+
+  setTimeout(function () {
+    if (state === "running" && getRemaining() <= 0) {
+      if (phase === "focus") onFocusExpired();
+      else onBreakExpired();
+    }
+  }, 0);
+
+  render();
+})();
+</script>
+</body>
+</html>
