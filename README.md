@@ -8,11 +8,17 @@ Multilingual symbol-based UI — no text labels to translate.
 
 ## Screenshots
 
-<p align="center">
-<img src="screenshots/01.png" width="280" alt="Chat preview showing timer status">
-<img src="screenshots/02.png" width="280" alt="Timer idle, ready to start">
-<img src="screenshots/03.png" width="280" alt="Timer running with time overlay">
-</p>
+Chat preview with live timer status:
+
+![Chat preview](screenshots/01.png)
+
+Idle, ready to start a 25 or 50 minute session:
+
+![Idle](screenshots/02.png)
+
+Tap the pie to reveal remaining time:
+
+![Running](screenshots/03.png)
 
 ## Install
 
