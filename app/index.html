@@ -111,6 +111,7 @@ body {
 .btn-start.running { background: #c0392b; }
 .btn-start.breaking { background: #27ae60; }
 .btn-reset { background: #222; color: #aaa; }
+.btn-reset span { display: inline-block; transform: scaleX(-1); }
 
 .done-banner {
   position: fixed;
@@ -163,7 +164,7 @@ body {
 </div>
 
 <div class="controls">
-  <button class="btn-reset" id="btn-reset" aria-label="Reset">&#x21bb;</button>
+  <button class="btn-reset" id="btn-reset" aria-label="Reset"><span>&#x21bb;</span></button>
   <button class="btn-start" id="btn-start" aria-label="Start">&#x25b6;</button>
 </div>
 
