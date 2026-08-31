@@ -172,7 +172,7 @@ body {
 
 <div class="history" id="history"></div>
 
-<div class="footer">Keep this window open to be notified when time is up.</div>
+<div class="footer" id="footer">Keep this app open so the chat can receive notifications.</div>
 
 <script src="webxdc.js"></script>
 <script>
@@ -192,6 +192,7 @@ body {
   var banner = document.getElementById("banner");
   var historyEl = document.getElementById("history");
   var durPicker = document.getElementById("dur-picker");
+  var footerEl = document.getElementById("footer");
   var durBtns = durPicker.querySelectorAll(".dur-btn");
 
   var focusDuration = 50 * 60;
@@ -202,13 +203,25 @@ body {
   var pausedRemaining = focusDuration;
   var completedCount = 0;
   var handled = {};
+  var counted = {};
 
   var localInterval = null;
   var audioCtx = null;
   var lastSummaryUpdate = 0;
+  // Cadence of the chatlist summary. Every send is a real (invisible) message on
+  // the Delta Chat transport, so stay well above sendUpdateInterval (10s).
+  var SUMMARY_INTERVAL = 60000;
+  var SUMMARY_MIN_GAP = 10000;
+  var unwatchedTimeout = null;
   var overlayTimeout = null;
   var doneTime = 0;
   var doneInterval = null;
+
+  function countCompletion(key) {
+    if (counted[key]) return;
+    counted[key] = true;
+    completedCount++;
+  }
 
   function breakDuration() {
     return activeDurationMins === 50 ? 600 : 300;
@@ -360,6 +373,8 @@ body {
       startBtn.innerHTML = PLAY;
     }
 
+    footerEl.style.display = state === "running" ? "" : "none";
+
     if (completedCount > 0) {
       historyEl.innerHTML = completedCount + " 🍅";
     } else {
@@ -367,18 +382,47 @@ body {
     }
   }
 
-  function updateSummary() {
-    var now = Date.now();
-    if (now - lastSummaryUpdate < 300000) return;
-    lastSummaryUpdate = now;
+  function summaryText() {
     var r = getRemaining();
-    var text = phase === "focus"
-      ? "▶ " + fmtMins(r)
-      : "☕ " + fmtMins(r);
+    return (phase === "focus" ? "▶ " : "☕ ") + fmtMins(r);
+  }
+
+  function sendSummary(text) {
+    lastSummaryUpdate = Date.now();
     window.webxdc.sendUpdate({
       payload: { type: "tick" },
       summary: text
     }, "");
+  }
+
+  function updateSummary() {
+    if (Date.now() - lastSummaryUpdate < SUMMARY_INTERVAL) return;
+    sendSummary(summaryText());
+  }
+
+  // Last thing an instance does before going away: mark the countdown as
+  // unwatched, so a frozen number is not read as live. If this instance is only
+  // backgrounded rather than gone, its next tick overwrites this within
+  // SUMMARY_INTERVAL — as does any other participant who still has it open.
+  function sendUnwatchedSummary() {
+    sendSummary(summaryText() + " 💤");
+  }
+
+  // Pressing start and immediately switching away is the normal way to use this
+  // app, and that hide lands inside the rate floor. Dropping the marker there
+  // would lose it for good — the app is hidden now, so no later visibilitychange
+  // is coming — so defer it instead of skipping it.
+  function markUnwatched() {
+    if (state !== "running") return;
+    var wait = SUMMARY_MIN_GAP - (Date.now() - lastSummaryUpdate);
+    if (wait <= 0) {
+      sendUnwatchedSummary();
+      return;
+    }
+    clearTimeout(unwatchedTimeout);
+    unwatchedTimeout = setTimeout(function () {
+      if (document.hidden && state === "running") sendUnwatchedSummary();
+    }, wait);
   }
 
   function startLocalTick() {
@@ -404,7 +448,7 @@ body {
     if (handled[key]) return;
     handled[key] = true;
 
-    completedCount++;
+    countCompletion(key);
     playFocusAlarm();
     showBanner("✓", "#2ecc71");
 
@@ -413,9 +457,9 @@ body {
 
     window.webxdc.sendUpdate({
       payload: { type: "focusComplete", focusEnd: endTime, breakEnd: be },
-      info: "✓",
+      info: "📝 ✓",
       summary: "☕ " + fmtMins(bd),
-      notify: { "*": "✓" }
+      notify: { "*": "📝 ✓" }
     }, "");
 
     lastSummaryUpdate = Date.now();
@@ -440,7 +484,8 @@ body {
     window.webxdc.sendUpdate({
       payload: { type: "breakComplete", breakEnd: endTime },
       info: "☕ ✓",
-      summary: "🍅"
+      summary: "🍅",
+      notify: { "*": "☕ ✓" }
     }, "");
 
     render();
@@ -553,7 +598,7 @@ body {
 
     } else if (p.type === "focusComplete") {
       handled["f-" + p.focusEnd] = true;
-      completedCount++;
+      countCompletion("f-" + p.focusEnd);
       phase = "break";
       state = "running";
       endTime = p.breakEnd;
@@ -570,7 +615,7 @@ body {
       handled["f-" + p.endTime] = true;
       stopLocalTick();
       state = "done";
-      completedCount++;
+      countCompletion("f-" + p.endTime);
       doneTime = p.endTime;
       startDoneTick();
     }
@@ -618,8 +663,9 @@ body {
       var name = window.webxdc.selfName || "Someone";
       window.webxdc.sendUpdate({
         payload: { type: "start", endTime: et, durationMins: activeDurationMins },
-        info: name + ": " + activeDurationMins + "min",
-        summary: "▶ " + fmtMins(focusDuration)
+        info: name + " ▶ " + activeDurationMins + "min pomodoro",
+        summary: "▶ " + fmtMins(focusDuration),
+        notify: { "*": name + " ▶ " + activeDurationMins + "min pomodoro" }
       }, "");
       lastSummaryUpdate = Date.now();
       applyUpdate({ type: "start", endTime: et, durationMins: activeDurationMins });
@@ -633,6 +679,27 @@ body {
       summary: "🍅"
     }, "");
     applyUpdate({ type: "reset", durationMins: activeDurationMins });
+  });
+
+  // Coming back to the app refreshes the summary at once, rather than leaving a
+  // snapshot up to SUMMARY_INTERVAL stale sitting in the chatlist. Rate-floored
+  // so flipping between apps cannot outpace sendUpdateInterval.
+  document.addEventListener("visibilitychange", function () {
+    if (state !== "running") return;
+    if (document.hidden) {
+      markUnwatched();
+      return;
+    }
+    clearTimeout(unwatchedTimeout);
+    if (Date.now() - lastSummaryUpdate < SUMMARY_MIN_GAP) return;
+    sendSummary(summaryText());
+    render();
+  });
+
+  // Teardown does not always fire visibilitychange first — closing a desktop
+  // window can go straight here.
+  window.addEventListener("pagehide", function () {
+    markUnwatched();
   });
 
   window.webxdc.setUpdateListener(function (update) {
