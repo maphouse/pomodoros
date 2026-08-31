@@ -212,7 +212,6 @@ body {
   // the Delta Chat transport, so stay well above sendUpdateInterval (10s).
   var SUMMARY_INTERVAL = 60000;
   var SUMMARY_MIN_GAP = 10000;
-  var unwatchedTimeout = null;
   var overlayTimeout = null;
   var doneTime = 0;
   var doneInterval = null;
@@ -398,31 +397,6 @@ body {
   function updateSummary() {
     if (Date.now() - lastSummaryUpdate < SUMMARY_INTERVAL) return;
     sendSummary(summaryText());
-  }
-
-  // Last thing an instance does before going away: mark the countdown as
-  // unwatched, so a frozen number is not read as live. If this instance is only
-  // backgrounded rather than gone, its next tick overwrites this within
-  // SUMMARY_INTERVAL — as does any other participant who still has it open.
-  function sendUnwatchedSummary() {
-    sendSummary(summaryText() + " 💤");
-  }
-
-  // Pressing start and immediately switching away is the normal way to use this
-  // app, and that hide lands inside the rate floor. Dropping the marker there
-  // would lose it for good — the app is hidden now, so no later visibilitychange
-  // is coming — so defer it instead of skipping it.
-  function markUnwatched() {
-    if (state !== "running") return;
-    var wait = SUMMARY_MIN_GAP - (Date.now() - lastSummaryUpdate);
-    if (wait <= 0) {
-      sendUnwatchedSummary();
-      return;
-    }
-    clearTimeout(unwatchedTimeout);
-    unwatchedTimeout = setTimeout(function () {
-      if (document.hidden && state === "running") sendUnwatchedSummary();
-    }, wait);
   }
 
   function startLocalTick() {
@@ -685,21 +659,10 @@ body {
   // snapshot up to SUMMARY_INTERVAL stale sitting in the chatlist. Rate-floored
   // so flipping between apps cannot outpace sendUpdateInterval.
   document.addEventListener("visibilitychange", function () {
-    if (state !== "running") return;
-    if (document.hidden) {
-      markUnwatched();
-      return;
-    }
-    clearTimeout(unwatchedTimeout);
+    if (document.hidden || state !== "running") return;
     if (Date.now() - lastSummaryUpdate < SUMMARY_MIN_GAP) return;
     sendSummary(summaryText());
     render();
-  });
-
-  // Teardown does not always fire visibilitychange first — closing a desktop
-  // window can go straight here.
-  window.addEventListener("pagehide", function () {
-    markUnwatched();
   });
 
   window.webxdc.setUpdateListener(function (update) {
