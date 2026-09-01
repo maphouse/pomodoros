@@ -8,17 +8,10 @@ Multilingual symbol-based UI — no text labels to translate.
 
 ## Screenshots
 
-Chat preview with live timer status:
-
-![Chat preview](screenshots/01.png)
-
-Idle, ready to start a 25 or 50 minute session:
-
-![Idle](screenshots/02.png)
-
-Tap the pie to reveal remaining time:
-
-![Running](screenshots/03.png)
+| Chat preview | Idle | Running |
+|:---:|:---:|:---:|
+| ![Chat preview](screenshots/01.png) | ![Idle](screenshots/02.png) | ![Running](screenshots/03.png) |
+| Live timer status in chat | Ready to start 25 or 50 min | Tap the pie for remaining time |
 
 ## Install
 
