@@ -242,6 +242,11 @@ body {
   var overlayTimeout = null;
   var tickDialValue = parseInt(localStorage.getItem("tickDial") || "0", 10);
   var lastTickSecond = -1;
+  var tickOutput = null;
+  var washSource = null;
+  var washGain = null;
+  var washFilter = null;
+  var WASH_THRESHOLD = 75;
   var doneTime = 0;
   var doneInterval = null;
 
@@ -436,11 +441,11 @@ body {
       render();
       updateSummary();
       var r = getRemaining();
-      if (tickDialValue > 0 && r !== lastTickSecond && r >= 0) {
+      if (tickDialValue > 0 && tickDialValue < WASH_THRESHOLD && r !== lastTickSecond && r >= 0) {
         var shouldTick = phase === "focus" || (r % 2 === 0);
         lastTickSecond = r;
         if (shouldTick) playTick();
-      } else if (tickDialValue === 0 || r < 0) {
+      } else {
         lastTickSecond = r;
       }
       if (r <= 0) {
@@ -449,10 +454,12 @@ body {
         else onBreakExpired();
       }
     }, 250);
+    if (tickDialValue >= WASH_THRESHOLD) startWash();
   }
 
   function stopLocalTick() {
     if (localInterval) { clearInterval(localInterval); localInterval = null; }
+    stopWash();
   }
 
   function onFocusExpired() {
@@ -525,6 +532,9 @@ body {
         makeupGain.gain.value = 3.45;
         masterComp.connect(makeupGain);
         makeupGain.connect(audioCtx.destination);
+        tickOutput = audioCtx.createGain();
+        tickOutput.gain.value = 1.0;
+        tickOutput.connect(audioCtx.destination);
       } catch (e) {}
     }
   }
@@ -583,18 +593,20 @@ body {
   function playTick() {
     try {
       primeAudio();
+      if (!tickOutput) return;
+      var t = tickDialValue / 100;
       var isBreak = phase === "break";
-      var t = Math.pow(tickDialValue / 100, 3);
-      var decay = 0.008 * Math.pow(400, t);
-      var attack = 0.001 + t * t * 0.04;
-      var sustain = t * 1.5;
-      var q = 4 * Math.pow(0.075, t);
-      if (isBreak) { decay *= 1.2; q *= 0.6; }
+      var attack = 0.001;
+      var sustain = t * 1.3;
+      var decay = 0.02 + t * 0.4;
       var total = attack + sustain + decay;
       var tickInt = isBreak ? 2 : 1;
       var layers = Math.max(1, Math.ceil(total / tickInt));
-      var baseVol = isBreak ? 0.5 : 0.8;
+      var baseVol = isBreak ? 0.08 : 0.13;
       var vol = baseVol / Math.sqrt(layers);
+      var q = 0.5 + t * 9;
+      var freq = 528 + t * 12;
+      if (isBreak) { q *= 0.7; freq = 400 + t * 100; }
       var sr = audioCtx.sampleRate;
       var len = Math.floor(sr * (total + 0.05));
       var buf = audioCtx.createBuffer(1, len, sr);
@@ -604,7 +616,7 @@ body {
       src.buffer = buf;
       var bp = audioCtx.createBiquadFilter();
       bp.type = "bandpass";
-      bp.frequency.value = isBreak ? 400 : 528;
+      bp.frequency.value = freq;
       bp.Q.value = q;
       var g = audioCtx.createGain();
       var now = audioCtx.currentTime;
@@ -612,14 +624,75 @@ body {
       g.gain.linearRampToValueAtTime(vol, now + attack);
       g.gain.setValueAtTime(vol, now + attack + sustain);
       g.gain.exponentialRampToValueAtTime(0.001, now + total);
-      var lp = audioCtx.createBiquadFilter();
-      lp.type = "lowpass";
-      lp.frequency.value = 700;
       src.connect(bp);
-      bp.connect(lp);
-      lp.connect(g);
-      g.connect(masterComp);
+      bp.connect(g);
+      g.connect(tickOutput);
       src.start(now);
+    } catch (e) {}
+  }
+
+  function washVolume() {
+    var t = tickDialValue / 100;
+    var base = phase === "break" ? 0.08 : 0.13;
+    return base * (0.7 + t * 0.3);
+  }
+
+  function startWash() {
+    if (tickDialValue < WASH_THRESHOLD) return;
+    stopWash();
+    primeAudio();
+    if (!audioCtx || !tickOutput) return;
+    try {
+      var t = tickDialValue / 100;
+      var sr = audioCtx.sampleRate;
+      var len = sr * 2;
+      var buf = audioCtx.createBuffer(1, len, sr);
+      var d = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      var src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      washFilter = audioCtx.createBiquadFilter();
+      washFilter.type = "bandpass";
+      washFilter.frequency.value = 540;
+      washFilter.Q.value = 0.5 + t * 9;
+      washGain = audioCtx.createGain();
+      var now = audioCtx.currentTime;
+      washGain.gain.setValueAtTime(0.001, now);
+      washGain.gain.linearRampToValueAtTime(washVolume(), now + 0.3);
+      src.connect(washFilter);
+      washFilter.connect(washGain);
+      washGain.connect(tickOutput);
+      src.start();
+      washSource = src;
+    } catch (e) {}
+  }
+
+  function stopWash() {
+    if (washGain && audioCtx) {
+      try {
+        var now = audioCtx.currentTime;
+        washGain.gain.cancelScheduledValues(now);
+        washGain.gain.setValueAtTime(washGain.gain.value, now);
+        washGain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+        if (washSource) washSource.stop(now + 0.6);
+      } catch (e) {}
+    }
+    washSource = null;
+    washGain = null;
+    washFilter = null;
+  }
+
+  function updateWashParams() {
+    if (!washGain || !washFilter || !audioCtx) return;
+    if (tickDialValue < WASH_THRESHOLD) { stopWash(); return; }
+    try {
+      var t = tickDialValue / 100;
+      var now = audioCtx.currentTime;
+      washGain.gain.cancelScheduledValues(now);
+      washGain.gain.setValueAtTime(washGain.gain.value, now);
+      washGain.gain.linearRampToValueAtTime(washVolume(), now + 0.05);
+      washFilter.Q.value = 0.5 + t * 9;
     } catch (e) {}
   }
 
@@ -797,6 +870,14 @@ body {
     }
     localStorage.setItem("tickDial", String(tickDialValue));
     renderTickDial();
+    if (state === "running") {
+      if (tickDialValue >= WASH_THRESHOLD) {
+        if (!washSource) startWash();
+        else updateWashParams();
+      } else {
+        if (washSource) stopWash();
+      }
+    }
   }
 
   tickDial.addEventListener("pointerdown", function (e) {
