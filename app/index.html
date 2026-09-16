@@ -176,13 +176,13 @@ body {
   <div class="tick-dial" id="tick-dial">
     <svg viewBox="0 0 56 56" width="56" height="56">
       <circle cx="28" cy="28" r="28" fill="#222" id="dial-bg"/>
-      <path id="dial-track" fill="none" stroke="#444" stroke-width="3" stroke-linecap="round"/>
-      <path id="dial-fill" fill="none" stroke="#e74c3c" stroke-width="3" stroke-linecap="round"/>
-      <circle id="dial-knob" r="4" fill="#666"/>
-      <g transform="translate(21,20)" stroke="#555" stroke-width="1.8" stroke-linecap="round" id="dial-icon">
-        <line x1="2" y1="16" x2="5" y2="4"/>
-        <line x1="6" y1="16" x2="10" y2="7"/>
-        <line x1="10" y1="16" x2="12" y2="11"/>
+      <path id="dial-track" fill="none" stroke="#444" stroke-width="2.5" stroke-linecap="round"/>
+      <path id="dial-fill" fill="none" stroke="#3498db" stroke-width="2.5" stroke-linecap="round"/>
+      <circle id="dial-knob" r="3" fill="#666"/>
+      <g transform="translate(21,19)" stroke="#555" stroke-width="1.8" stroke-linecap="round" id="dial-icon">
+        <line x1="7" y1="14" x2="1" y2="2"/>
+        <line x1="7" y1="14" x2="7" y2="0"/>
+        <line x1="7" y1="14" x2="13" y2="2"/>
       </g>
     </svg>
   </div>
@@ -233,14 +233,18 @@ body {
 
   var localInterval = null;
   var audioCtx = null;
-  var masterComp = null;
   var lastSummaryUpdate = 0;
   // Cadence of the chatlist summary. Every send is a real (invisible) message on
   // the Delta Chat transport, so stay well above sendUpdateInterval (10s).
   var SUMMARY_INTERVAL = 60000;
   var SUMMARY_MIN_GAP = 10000;
   var overlayTimeout = null;
-  var tickDialValue = parseInt(localStorage.getItem("tickDial") || "0", 10);
+  var _storedDial = parseInt(localStorage.getItem("tickDial") || "0", 10);
+  var tickDialValue = _storedDial > 0 ? _storedDial : 30;
+  var tickEnabled = localStorage.getItem("tickEnabled") !== null
+      ? localStorage.getItem("tickEnabled") === "1"
+      : _storedDial > 0;
+  var focusDialValue = parseInt(localStorage.getItem("focusDial") || String(tickDialValue), 10);
   var lastTickSecond = -1;
   var tickOutput = null;
   var washSource = null;
@@ -441,7 +445,8 @@ body {
       render();
       updateSummary();
       var r = getRemaining();
-      if (tickDialValue > 0 && tickDialValue < WASH_THRESHOLD && r !== lastTickSecond && r >= 0) {
+      var eff = effectiveDialValue();
+      if (eff > 0 && eff < WASH_THRESHOLD && r !== lastTickSecond && r >= 0) {
         var shouldTick = phase === "focus" || (r % 2 === 0);
         lastTickSecond = r;
         if (shouldTick) playTick();
@@ -454,7 +459,7 @@ body {
         else onBreakExpired();
       }
     }, 250);
-    if (tickDialValue >= WASH_THRESHOLD) startWash();
+    if (effectiveDialValue() >= WASH_THRESHOLD) startWash();
   }
 
   function stopLocalTick() {
@@ -522,16 +527,6 @@ body {
     if (!audioCtx) {
       try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        masterComp = audioCtx.createDynamicsCompressor();
-        masterComp.threshold.value = -24;
-        masterComp.knee.value = 6;
-        masterComp.ratio.value = 12;
-        masterComp.attack.value = 0.002;
-        masterComp.release.value = 0.05;
-        var makeupGain = audioCtx.createGain();
-        makeupGain.gain.value = 3.45;
-        masterComp.connect(makeupGain);
-        makeupGain.connect(audioCtx.destination);
         tickOutput = audioCtx.createGain();
         tickOutput.gain.value = 1.0;
         tickOutput.connect(audioCtx.destination);
@@ -555,10 +550,10 @@ body {
         var gain = audioCtx.createGain();
         osc.type = "square";
         osc.frequency.value = b.freq;
-        gain.gain.setValueAtTime(0.6, now + b.start);
+        gain.gain.setValueAtTime(0.25, now + b.start);
         gain.gain.exponentialRampToValueAtTime(0.001, now + b.start + b.dur);
         osc.connect(gain);
-        gain.connect(masterComp);
+        gain.connect(tickOutput);
         osc.start(now + b.start);
         osc.stop(now + b.start + b.dur + 0.05);
       }
@@ -580,18 +575,24 @@ body {
         var gain = audioCtx.createGain();
         osc.type = "sine";
         osc.frequency.value = n.freq;
-        gain.gain.setValueAtTime(0.5, now + n.start);
+        gain.gain.setValueAtTime(0.2, now + n.start);
         gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
         osc.connect(gain);
-        gain.connect(masterComp);
+        gain.connect(tickOutput);
         osc.start(now + n.start);
         osc.stop(now + n.start + n.dur + 0.05);
       }
     } catch (e) {}
   }
 
+  function effectiveDialValue() {
+    if (!tickEnabled) return 0;
+    if (phase === "break") return 1;
+    return tickDialValue;
+  }
+
   function dialT() {
-    return Math.pow(tickDialValue / 100, 3);
+    return Math.pow(effectiveDialValue() / 100, 3);
   }
 
   function playTick() {
@@ -606,7 +607,7 @@ body {
       var total = attack + sustain + decay;
       var tickInt = isBreak ? 2 : 1;
       var layers = Math.max(1, Math.ceil(total / tickInt));
-      var baseVol = isBreak ? 0.08 : 0.13;
+      var baseVol = isBreak ? 0.16 : 0.26;
       var vol = baseVol * (1 + t * 1.5) / Math.sqrt(layers);
       var q = 0.5 + t * 9;
       var freq = 528 + t * 12;
@@ -637,12 +638,12 @@ body {
 
   function washVolume() {
     var t = dialT();
-    var base = phase === "break" ? 0.08 : 0.13;
+    var base = phase === "break" ? 0.16 : 0.26;
     return base * (1 + t * 1.5);
   }
 
   function startWash() {
-    if (tickDialValue < WASH_THRESHOLD) return;
+    if (effectiveDialValue() < WASH_THRESHOLD) return;
     stopWash();
     primeAudio();
     if (!audioCtx || !tickOutput) return;
@@ -689,7 +690,7 @@ body {
 
   function updateWashParams() {
     if (!washGain || !washFilter || !audioCtx) return;
-    if (tickDialValue < WASH_THRESHOLD) { stopWash(); return; }
+    if (effectiveDialValue() < WASH_THRESHOLD) { stopWash(); return; }
     try {
       var t = dialT();
       var now = audioCtx.currentTime;
@@ -700,7 +701,7 @@ body {
     } catch (e) {}
   }
 
-  var DIAL_CX = 28, DIAL_CY = 28, DIAL_R = 22;
+  var DIAL_CX = 28, DIAL_CY = 28, DIAL_R = 26;
   var DIAL_START = 210, DIAL_SWEEP = 300;
 
   function dialXY(deg) {
@@ -720,16 +721,15 @@ body {
   }
 
   function renderTickDial() {
-    var on = tickDialValue > 0;
     var endDeg = DIAL_START + (tickDialValue / 100) * DIAL_SWEEP;
     dialTrack.setAttribute("d", dialArcPath(DIAL_START, DIAL_START + DIAL_SWEEP));
-    dialFill.setAttribute("d", on ? dialArcPath(DIAL_START, endDeg) : "");
-    var pos = dialXY(on ? endDeg : DIAL_START);
+    dialFill.setAttribute("d", tickEnabled ? dialArcPath(DIAL_START, endDeg) : "");
+    var pos = dialXY(endDeg);
     dialKnob.setAttribute("cx", pos[0].toFixed(1));
     dialKnob.setAttribute("cy", pos[1].toFixed(1));
-    dialKnob.setAttribute("fill", on ? "#e74c3c" : "#666");
-    dialBg.setAttribute("fill", on ? "rgba(231,76,60,0.15)" : "#222");
-    dialIcon.setAttribute("stroke", on ? "#e74c3c" : "#555");
+    dialKnob.setAttribute("fill", tickEnabled ? "#3498db" : "#666");
+    dialBg.setAttribute("fill", tickEnabled ? "rgba(52,152,219,0.15)" : "#222");
+    dialIcon.setAttribute("stroke", tickEnabled ? "#3498db" : "#555");
   }
 
   function applyUpdate(p) {
@@ -855,6 +855,7 @@ body {
       summary: "🍅"
     }, "");
     applyUpdate({ type: "reset", durationMins: activeDurationMins });
+    showTimeOverlay();
   });
 
   function updateDialFromPointer(e) {
@@ -868,14 +869,17 @@ body {
     var offset = angle - DIAL_START;
     if (offset < 0) offset += 360;
     if (offset > DIAL_SWEEP) {
-      tickDialValue = offset > DIAL_SWEEP + 30 ? 0 : 100;
+      tickDialValue = offset > DIAL_SWEEP + 30 ? 1 : 100;
     } else {
-      tickDialValue = Math.round(offset / DIAL_SWEEP * 100);
+      tickDialValue = Math.max(1, Math.round(offset / DIAL_SWEEP * 100));
     }
+    focusDialValue = tickDialValue;
     localStorage.setItem("tickDial", String(tickDialValue));
+    localStorage.setItem("focusDial", String(focusDialValue));
     renderTickDial();
     if (state === "running") {
-      if (tickDialValue >= WASH_THRESHOLD) {
+      var eff = effectiveDialValue();
+      if (eff >= WASH_THRESHOLD) {
         if (!washSource) startWash();
         else updateWashParams();
       } else {
@@ -888,11 +892,38 @@ body {
     e.preventDefault();
     primeAudio();
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
-    updateDialFromPointer(e);
-    function onMove(ev) { ev.preventDefault(); updateDialFromPointer(ev); }
+    var rect = tickDial.getBoundingClientRect();
+    var cx = rect.left + rect.width / 2;
+    var cy = rect.top + rect.height / 2;
+    var dx = e.clientX - cx;
+    var dy = e.clientY - cy;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    var innerR = rect.width * 0.32;
+    var startX = e.clientX, startY = e.clientY;
+    var dragged = false;
+    function onMove(ev) {
+      ev.preventDefault();
+      if (Math.sqrt(Math.pow(ev.clientX - startX, 2) + Math.pow(ev.clientY - startY, 2)) > 5) dragged = true;
+      if (dragged) updateDialFromPointer(ev);
+    }
     function onUp() {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
+      if (!dragged && dist < innerR) {
+        tickEnabled = !tickEnabled;
+        localStorage.setItem("tickEnabled", tickEnabled ? "1" : "0");
+        renderTickDial();
+        if (state === "running") {
+          var eff = effectiveDialValue();
+          if (eff >= WASH_THRESHOLD && !washSource) startWash();
+          else if (eff < WASH_THRESHOLD || !tickEnabled) stopWash();
+        }
+      }
+      showTimeOverlay();
+    }
+    if (dist >= innerR) {
+      updateDialFromPointer(e);
+      dragged = true;
     }
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
