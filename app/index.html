@@ -112,6 +112,13 @@ body {
 .btn-start.breaking { background: #27ae60; }
 .btn-reset { background: #222; color: #aaa; }
 .btn-reset span { display: inline-block; transform: scaleX(-1); }
+.tick-dial {
+  width: 56px;
+  height: 56px;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
 
 .done-banner {
   position: fixed;
@@ -166,6 +173,19 @@ body {
 <div class="controls">
   <button class="btn-reset" id="btn-reset" aria-label="Reset"><span>&#x21bb;</span></button>
   <button class="btn-start" id="btn-start" aria-label="Start">&#x25b6;</button>
+  <div class="tick-dial" id="tick-dial">
+    <svg viewBox="0 0 56 56" width="56" height="56">
+      <circle cx="28" cy="28" r="28" fill="#222" id="dial-bg"/>
+      <path id="dial-track" fill="none" stroke="#444" stroke-width="3" stroke-linecap="round"/>
+      <path id="dial-fill" fill="none" stroke="#e74c3c" stroke-width="3" stroke-linecap="round"/>
+      <circle id="dial-knob" r="4" fill="#666"/>
+      <g transform="translate(21,20)" stroke="#555" stroke-width="1.8" stroke-linecap="round" id="dial-icon">
+        <line x1="2" y1="16" x2="5" y2="4"/>
+        <line x1="6" y1="16" x2="10" y2="7"/>
+        <line x1="10" y1="16" x2="12" y2="11"/>
+      </g>
+    </svg>
+  </div>
 </div>
 
 <div class="done-banner" id="banner"></div>
@@ -194,6 +214,12 @@ body {
   var durPicker = document.getElementById("dur-picker");
   var footerEl = document.getElementById("footer");
   var durBtns = durPicker.querySelectorAll(".dur-btn");
+  var tickDial = document.getElementById("tick-dial");
+  var dialTrack = document.getElementById("dial-track");
+  var dialFill = document.getElementById("dial-fill");
+  var dialKnob = document.getElementById("dial-knob");
+  var dialBg = document.getElementById("dial-bg");
+  var dialIcon = document.getElementById("dial-icon");
 
   var focusDuration = 50 * 60;
   var activeDurationMins = 50;
@@ -207,12 +233,15 @@ body {
 
   var localInterval = null;
   var audioCtx = null;
+  var masterComp = null;
   var lastSummaryUpdate = 0;
   // Cadence of the chatlist summary. Every send is a real (invisible) message on
   // the Delta Chat transport, so stay well above sendUpdateInterval (10s).
   var SUMMARY_INTERVAL = 60000;
   var SUMMARY_MIN_GAP = 10000;
   var overlayTimeout = null;
+  var tickDialValue = parseInt(localStorage.getItem("tickDial") || "0", 10);
+  var lastTickSecond = -1;
   var doneTime = 0;
   var doneInterval = null;
 
@@ -401,11 +430,20 @@ body {
 
   function startLocalTick() {
     stopLocalTick();
+    lastTickSecond = getRemaining();
     localInterval = setInterval(function () {
       if (state !== "running") { stopLocalTick(); return; }
       render();
       updateSummary();
-      if (getRemaining() <= 0) {
+      var r = getRemaining();
+      if (tickDialValue > 0 && r !== lastTickSecond && r >= 0) {
+        var shouldTick = phase === "focus" || (r % 2 === 0);
+        lastTickSecond = r;
+        if (shouldTick) playTick();
+      } else if (tickDialValue === 0 || r < 0) {
+        lastTickSecond = r;
+      }
+      if (r <= 0) {
         stopLocalTick();
         if (phase === "focus") onFocusExpired();
         else onBreakExpired();
@@ -475,7 +513,19 @@ body {
 
   function primeAudio() {
     if (!audioCtx) {
-      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        masterComp = audioCtx.createDynamicsCompressor();
+        masterComp.threshold.value = -24;
+        masterComp.knee.value = 6;
+        masterComp.ratio.value = 12;
+        masterComp.attack.value = 0.002;
+        masterComp.release.value = 0.05;
+        var makeupGain = audioCtx.createGain();
+        makeupGain.gain.value = 3.45;
+        masterComp.connect(makeupGain);
+        makeupGain.connect(audioCtx.destination);
+      } catch (e) {}
     }
   }
 
@@ -495,10 +545,10 @@ body {
         var gain = audioCtx.createGain();
         osc.type = "square";
         osc.frequency.value = b.freq;
-        gain.gain.setValueAtTime(0.3, now + b.start);
+        gain.gain.setValueAtTime(0.6, now + b.start);
         gain.gain.exponentialRampToValueAtTime(0.001, now + b.start + b.dur);
         osc.connect(gain);
-        gain.connect(audioCtx.destination);
+        gain.connect(masterComp);
         osc.start(now + b.start);
         osc.stop(now + b.start + b.dur + 0.05);
       }
@@ -520,14 +570,89 @@ body {
         var gain = audioCtx.createGain();
         osc.type = "sine";
         osc.frequency.value = n.freq;
-        gain.gain.setValueAtTime(0.25, now + n.start);
+        gain.gain.setValueAtTime(0.5, now + n.start);
         gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
         osc.connect(gain);
-        gain.connect(audioCtx.destination);
+        gain.connect(masterComp);
         osc.start(now + n.start);
         osc.stop(now + n.start + n.dur + 0.05);
       }
     } catch (e) {}
+  }
+
+  function playTick() {
+    try {
+      primeAudio();
+      var isBreak = phase === "break";
+      var t = Math.pow(tickDialValue / 100, 3);
+      var decay = 0.008 * Math.pow(400, t);
+      var attack = 0.001 + t * t * 0.04;
+      var sustain = t * 1.5;
+      var q = 4 * Math.pow(0.075, t);
+      if (isBreak) { decay *= 1.2; q *= 0.6; }
+      var total = attack + sustain + decay;
+      var tickInt = isBreak ? 2 : 1;
+      var layers = Math.max(1, Math.ceil(total / tickInt));
+      var baseVol = isBreak ? 0.5 : 0.8;
+      var vol = baseVol / Math.sqrt(layers);
+      var sr = audioCtx.sampleRate;
+      var len = Math.floor(sr * (total + 0.05));
+      var buf = audioCtx.createBuffer(1, len, sr);
+      var d = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      var src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      var bp = audioCtx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = isBreak ? 400 : 528;
+      bp.Q.value = q;
+      var g = audioCtx.createGain();
+      var now = audioCtx.currentTime;
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(vol, now + attack);
+      g.gain.setValueAtTime(vol, now + attack + sustain);
+      g.gain.exponentialRampToValueAtTime(0.001, now + total);
+      var lp = audioCtx.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.value = 700;
+      src.connect(bp);
+      bp.connect(lp);
+      lp.connect(g);
+      g.connect(masterComp);
+      src.start(now);
+    } catch (e) {}
+  }
+
+  var DIAL_CX = 28, DIAL_CY = 28, DIAL_R = 22;
+  var DIAL_START = 210, DIAL_SWEEP = 300;
+
+  function dialXY(deg) {
+    var rad = deg * Math.PI / 180;
+    return [DIAL_CX + DIAL_R * Math.sin(rad), DIAL_CY - DIAL_R * Math.cos(rad)];
+  }
+
+  function dialArcPath(fromDeg, toDeg) {
+    var sweep = toDeg - fromDeg;
+    if (sweep <= 0) return "";
+    var s = dialXY(fromDeg);
+    var e = dialXY(toDeg);
+    var large = sweep > 180 ? 1 : 0;
+    return "M" + s[0].toFixed(1) + "," + s[1].toFixed(1) +
+           "A" + DIAL_R + "," + DIAL_R + " 0 " + large + ",1 " +
+           e[0].toFixed(1) + "," + e[1].toFixed(1);
+  }
+
+  function renderTickDial() {
+    var on = tickDialValue > 0;
+    var endDeg = DIAL_START + (tickDialValue / 100) * DIAL_SWEEP;
+    dialTrack.setAttribute("d", dialArcPath(DIAL_START, DIAL_START + DIAL_SWEEP));
+    dialFill.setAttribute("d", on ? dialArcPath(DIAL_START, endDeg) : "");
+    var pos = dialXY(on ? endDeg : DIAL_START);
+    dialKnob.setAttribute("cx", pos[0].toFixed(1));
+    dialKnob.setAttribute("cy", pos[1].toFixed(1));
+    dialKnob.setAttribute("fill", on ? "#e74c3c" : "#666");
+    dialBg.setAttribute("fill", on ? "rgba(231,76,60,0.15)" : "#222");
+    dialIcon.setAttribute("stroke", on ? "#e74c3c" : "#555");
   }
 
   function applyUpdate(p) {
@@ -655,6 +780,39 @@ body {
     applyUpdate({ type: "reset", durationMins: activeDurationMins });
   });
 
+  function updateDialFromPointer(e) {
+    var rect = tickDial.getBoundingClientRect();
+    var cx = rect.left + rect.width / 2;
+    var cy = rect.top + rect.height / 2;
+    var dx = e.clientX - cx;
+    var dy = e.clientY - cy;
+    var angle = Math.atan2(dx, -dy) * 180 / Math.PI;
+    if (angle < 0) angle += 360;
+    var offset = angle - DIAL_START;
+    if (offset < 0) offset += 360;
+    if (offset > DIAL_SWEEP) {
+      tickDialValue = offset > DIAL_SWEEP + 30 ? 0 : 100;
+    } else {
+      tickDialValue = Math.round(offset / DIAL_SWEEP * 100);
+    }
+    localStorage.setItem("tickDial", String(tickDialValue));
+    renderTickDial();
+  }
+
+  tickDial.addEventListener("pointerdown", function (e) {
+    e.preventDefault();
+    primeAudio();
+    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+    updateDialFromPointer(e);
+    function onMove(ev) { ev.preventDefault(); updateDialFromPointer(ev); }
+    function onUp() {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    }
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  });
+
   // Coming back to the app refreshes the summary at once, rather than leaving a
   // snapshot up to SUMMARY_INTERVAL stale sitting in the chatlist. Rate-floored
   // so flipping between apps cannot outpace sendUpdateInterval.
@@ -677,6 +835,7 @@ body {
   }, 0);
 
   render();
+  renderTickDial();
 })();
 </script>
 </body>
