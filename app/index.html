@@ -246,7 +246,7 @@ body {
   var washSource = null;
   var washGain = null;
   var washFilter = null;
-  var WASH_THRESHOLD = 75;
+  var WASH_THRESHOLD = 95;
   var doneTime = 0;
   var doneInterval = null;
 
@@ -590,11 +590,15 @@ body {
     } catch (e) {}
   }
 
+  function dialT() {
+    return Math.pow(tickDialValue / 100, 3);
+  }
+
   function playTick() {
     try {
       primeAudio();
       if (!tickOutput) return;
-      var t = tickDialValue / 100;
+      var t = dialT();
       var isBreak = phase === "break";
       var attack = 0.001;
       var sustain = t * 1.3;
@@ -632,7 +636,7 @@ body {
   }
 
   function washVolume() {
-    var t = tickDialValue / 100;
+    var t = dialT();
     var base = phase === "break" ? 0.08 : 0.13;
     return base * (0.7 + t * 0.3);
   }
@@ -643,7 +647,7 @@ body {
     primeAudio();
     if (!audioCtx || !tickOutput) return;
     try {
-      var t = tickDialValue / 100;
+      var t = dialT();
       var sr = audioCtx.sampleRate;
       var len = sr * 2;
       var buf = audioCtx.createBuffer(1, len, sr);
@@ -687,7 +691,7 @@ body {
     if (!washGain || !washFilter || !audioCtx) return;
     if (tickDialValue < WASH_THRESHOLD) { stopWash(); return; }
     try {
-      var t = tickDialValue / 100;
+      var t = dialT();
       var now = audioCtx.currentTime;
       washGain.gain.cancelScheduledValues(now);
       washGain.gain.setValueAtTime(washGain.gain.value, now);
