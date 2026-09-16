@@ -179,10 +179,8 @@ body {
       <path id="dial-track" fill="none" stroke="#444" stroke-width="2.5" stroke-linecap="round"/>
       <path id="dial-fill" fill="none" stroke="#3498db" stroke-width="2.5" stroke-linecap="round"/>
       <circle id="dial-knob" r="3" fill="#666"/>
-      <g transform="translate(22,19)" stroke="#555" stroke-width="1.8" stroke-linecap="round" id="dial-icon">
-        <line x1="4" y1="13" x2="1" y2="1"/>
-        <line x1="7" y1="13" x2="2" y2="6"/>
-        <line x1="9" y1="11" x2="5" y2="8"/>
+      <g transform="translate(18,18) scale(0.1)" fill="#555" id="dial-icon">
+        <path d="M147.65 45.5C147.14 49.96 135.57 63.29 132.21 67.38C118.43 84.15 104.45 100.64 90.13 116.97C85.5 122.26 76.37 135.96 68.5 134.9C63.58 129.51 71.34 116.39 75.2 112.03C90.96 94.21 108.79 77.91 125.67 61.17C130.47 56.4 135.14 51.15 140.42 46.9C142.39 45.31 145.35 43.73 147.65 45.5ZM52.5 106.13C48.96 104.82 50.26 97.07 50.67 94.17C52.38 82.18 58.65 71.35 61.89 59.77C62.53 57.46 65.13 46.63 67.41 47.17C71.06 48.03 67.83 59.41 67.21 62.09C64.01 75.77 60.89 94.64 52.5 106.13ZM164.83 113.25C166.05 118.62 157.68 121.05 154.15 123.32C141.36 131.52 127.78 139.2 113.63 144.8C110.52 146.03 98.46 146.89 96.96 142.86C95.21 138.15 105.7 132.47 108.99 131.17C122.07 126.02 135.36 121.44 148.62 116.8C152.04 115.6 161.65 111.75 164.83 113.25Z" fill-rule="evenodd"/>
       </g>
     </svg>
   </div>
@@ -729,7 +727,7 @@ body {
     dialKnob.setAttribute("cy", pos[1].toFixed(1));
     dialKnob.setAttribute("fill", tickEnabled ? "#3498db" : "#666");
     dialBg.setAttribute("fill", tickEnabled ? "rgba(52,152,219,0.15)" : "#222");
-    dialIcon.setAttribute("stroke", tickEnabled ? "#3498db" : "#555");
+    dialIcon.setAttribute("fill", tickEnabled ? "#3498db" : "#555");
   }
 
   function applyUpdate(p) {
