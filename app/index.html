@@ -85,17 +85,17 @@ body {
 
 .controls {
   display: flex;
-  gap: 12px;
+  gap: 14px;
 }
 
 .controls button {
   border: none;
   border-radius: 50%;
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   padding: 0;
   font-size: 22px;
-  line-height: 56px;
+  line-height: 64px;
   text-align: center;
   font-family: inherit;
   cursor: pointer;
@@ -113,8 +113,8 @@ body {
 .btn-reset { background: #222; color: #aaa; }
 .btn-reset span { display: inline-block; transform: scaleX(-1); font-size: 30px; }
 .tick-dial {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   cursor: pointer;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
@@ -174,12 +174,12 @@ body {
   <button class="btn-reset" id="btn-reset" aria-label="Reset"><span>&#x21bb;</span></button>
   <button class="btn-start" id="btn-start" aria-label="Start">&#x25b6;</button>
   <div class="tick-dial" id="tick-dial">
-    <svg viewBox="0 0 56 56" width="56" height="56">
-      <circle cx="28" cy="28" r="28" fill="#222" id="dial-bg"/>
+    <svg viewBox="0 0 64 64" width="64" height="64" style="overflow:visible">
+      <circle cx="32" cy="32" r="32" fill="#222" id="dial-bg"/>
       <path id="dial-track" fill="none" stroke="#444" stroke-width="3.75" stroke-linecap="round"/>
       <path id="dial-fill" fill="none" stroke="#3498db" stroke-width="3.75" stroke-linecap="round"/>
       <circle id="dial-knob" r="4.5" fill="#666"/>
-      <g transform="translate(11,12) scale(0.15)" fill="#555" id="dial-icon">
+      <g transform="translate(15,16) scale(0.15)" fill="#555" id="dial-icon">
         <path d="M147.65 45.5C147.14 49.96 135.57 63.29 132.21 67.38C118.43 84.15 104.45 100.64 90.13 116.97C85.5 122.26 76.37 135.96 68.5 134.9C63.58 129.51 71.34 116.39 75.2 112.03C90.96 94.21 108.79 77.91 125.67 61.17C130.47 56.4 135.14 51.15 140.42 46.9C142.39 45.31 145.35 43.73 147.65 45.5ZM52.5 106.13C48.96 104.82 50.26 97.07 50.67 94.17C52.38 82.18 58.65 71.35 61.89 59.77C62.53 57.46 65.13 46.63 67.41 47.17C71.06 48.03 67.83 59.41 67.21 62.09C64.01 75.77 60.89 94.64 52.5 106.13ZM164.83 113.25C166.05 118.62 157.68 121.05 154.15 123.32C141.36 131.52 127.78 139.2 113.63 144.8C110.52 146.03 98.46 146.89 96.96 142.86C95.21 138.15 105.7 132.47 108.99 131.17C122.07 126.02 135.36 121.44 148.62 116.8C152.04 115.6 161.65 111.75 164.83 113.25Z" fill-rule="evenodd"/>
       </g>
     </svg>
@@ -699,7 +699,7 @@ body {
     } catch (e) {}
   }
 
-  var DIAL_CX = 28, DIAL_CY = 28, DIAL_R = 26;
+  var DIAL_CX = 32, DIAL_CY = 32, DIAL_R = 26;
   var DIAL_START = 210, DIAL_SWEEP = 300;
 
   function dialXY(deg) {
