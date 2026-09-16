@@ -607,7 +607,7 @@ body {
       var tickInt = isBreak ? 2 : 1;
       var layers = Math.max(1, Math.ceil(total / tickInt));
       var baseVol = isBreak ? 0.08 : 0.13;
-      var vol = baseVol / Math.sqrt(layers);
+      var vol = baseVol * (1 + t * 1.5) / Math.sqrt(layers);
       var q = 0.5 + t * 9;
       var freq = 528 + t * 12;
       if (isBreak) { q *= 0.7; freq = 400 + t * 100; }
@@ -638,7 +638,7 @@ body {
   function washVolume() {
     var t = dialT();
     var base = phase === "break" ? 0.08 : 0.13;
-    return base * (0.7 + t * 0.3);
+    return base * (1 + t * 1.5);
   }
 
   function startWash() {
