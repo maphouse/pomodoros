@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Pomodoros</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
 html, body {
   height: 100%;
@@ -242,7 +242,6 @@ body {
   var tickEnabled = localStorage.getItem("tickEnabled") !== null
       ? localStorage.getItem("tickEnabled") === "1"
       : _storedDial > 0;
-  var focusDialValue = parseInt(localStorage.getItem("focusDial") || String(tickDialValue), 10);
   var lastTickSecond = -1;
   var tickOutput = null;
   var washSource = null;
@@ -868,9 +867,7 @@ body {
     } else {
       tickDialValue = Math.max(1, Math.round(offset / DIAL_SWEEP * 100));
     }
-    focusDialValue = tickDialValue;
     localStorage.setItem("tickDial", String(tickDialValue));
-    localStorage.setItem("focusDial", String(focusDialValue));
     renderTickDial();
     if (state === "running") {
       var eff = effectiveDialValue();
