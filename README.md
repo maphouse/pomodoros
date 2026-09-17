@@ -4,7 +4,7 @@ Shared pomodoro timer for [Delta Chat](https://delta.chat), built as a [webxdc](
 
 Two-phase focus + break timer with pie chart visualization. Choose 25 or 50 minute sessions. Tap the pie to reveal remaining time. Chat members are notified when time is up.
 
-Multilingual symbol-based UI — no text labels to translate.
+An adjustable focus sound — a soft tick that morphs into white noise as you turn the dial up — signals each phase and helps maintain concentration. Multilingual symbol-based UI — no text labels to translate.
 
 ## Screenshots
 
