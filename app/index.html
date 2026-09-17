@@ -88,7 +88,10 @@ body {
   display: flex;
   gap: 10px;
   width: 72vw;
+  transition: opacity 1s ease;
 }
+
+.controls.dimmed { opacity: 0.3; }
 
 .controls button {
   border: none;
@@ -109,8 +112,8 @@ body {
 .controls button:active { opacity: 0.7; }
 
 .btn-start { background: #e74c3c; color: #fff; }
-.btn-start.running { background: #c0392b; }
-.btn-start.breaking { background: #27ae60; }
+.btn-start.running { background: #222; color: #aaa; }
+.btn-start.breaking { background: #222; color: #aaa; }
 .btn-reset { background: #222; color: #aaa; }
 .btn-reset svg { width: 40%; height: 40%; }
 .tick-dial {
@@ -172,7 +175,7 @@ body {
   <div class="time-overlay" id="time-overlay"></div>
 </div>
 
-<div class="controls">
+<div class="controls" id="controls">
   <button class="btn-reset" id="btn-reset" aria-label="Reset"><svg viewBox="0 0 512 512"><path transform="rotate(45,256,256)" d="M257.21 0.08C257.35 0.08 257.49 0.08 257.63 0.08C257.86 24.82 258.1 49.57 258.34 74.32C263.35 75.24 268.68 74.77 273.77 75.14C281.44 75.7 289.11 76.87 296.66 78.18C326.27 83.34 354.37 95.79 379.31 112.36C450.99 159.96 489.6 253.01 470.74 337.32C462.92 372.27 447.77 403.37 425.72 431.57C399.69 464.86 362.05 488.59 322.45 501.83C311.4 505.52 299.76 507.92 288.26 509.67C283.5 510.4 274.24 509.95 270.32 511.92C260.95 511.92 251.59 511.92 242.22 511.92C239.57 510.48 235.89 511.2 232.94 510.81C226.26 509.92 219.63 508.89 213 507.71C195.5 504.6 178.25 498.2 162.21 490.73C105.24 464.21 63.36 411.97 45.82 352.33C42.13 339.79 40.08 327.01 38.66 314C37.95 307.56 36.73 299.77 37.99 293.41C58.27 293.41 78.54 293.41 98.82 293.41C99.44 296.26 99.07 299.35 99.3 302.27C99.89 309.74 100.73 317.2 102.16 324.55C106.57 347.24 116.76 368.46 130.27 387.11C185.71 463.67 302.05 471.74 367.8 404.04C383.46 387.91 395.96 369.05 403.83 348C430.99 275.29 400.39 195.65 334.36 156.82C317.62 146.98 298.67 140.45 279.42 137.78C272.83 136.86 264.61 134.94 258.04 136.3C257.83 160.74 257.61 185.18 257.4 209.62C207.16 174.9 156.92 140.17 106.68 105.44C156.85 70.32 207.03 35.2 257.21 0.08Z" fill="currentColor" fill-rule="evenodd" stroke="currentColor" stroke-width="0.25" stroke-linejoin="round"/></svg></button>
   <button class="btn-start" id="btn-start" aria-label="Start">&#x25b6;</button>
   <div class="tick-dial" id="tick-dial">
@@ -218,6 +221,7 @@ body {
   var dialFill = document.getElementById("dial-fill");
   var dialBg = document.getElementById("dial-bg");
   var dialIcon = document.getElementById("dial-icon");
+  var controlsEl = document.getElementById("controls");
 
   var focusDuration = 50 * 60;
   var activeDurationMins = 50;
@@ -330,6 +334,7 @@ body {
   }
 
   function showTimeOverlay() {
+    controlsEl.classList.remove("dimmed");
     var ov = overlayState();
     timeOverlay.textContent = ov.text;
     timeOverlay.classList.remove("fading");
@@ -395,6 +400,14 @@ body {
     var active = state === "running" || state === "paused";
     durPicker.style.opacity = active || phase === "break" ? "0.3" : "1";
     durPicker.style.pointerEvents = active || phase === "break" ? "none" : "auto";
+
+    var shouldDimControls = state === "running" && !ov.persistent &&
+        !timeOverlay.classList.contains("visible");
+    if (shouldDimControls) {
+      controlsEl.classList.add("dimmed");
+    } else {
+      controlsEl.classList.remove("dimmed");
+    }
 
     startBtn.classList.remove("running", "breaking");
     if (state === "running" && phase === "focus") {
