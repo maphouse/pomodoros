@@ -405,10 +405,10 @@ body {
         !timeOverlay.classList.contains("visible");
     if (shouldDimControls) {
       controlsEl.classList.add("dimmed");
-      historyEl.style.display = "none";
+      historyEl.style.visibility = "hidden";
     } else {
       controlsEl.classList.remove("dimmed");
-      historyEl.style.display = "";
+      historyEl.style.visibility = "";
     }
 
     startBtn.classList.remove("running", "breaking");
