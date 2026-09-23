@@ -405,8 +405,10 @@ body {
         !timeOverlay.classList.contains("visible");
     if (shouldDimControls) {
       controlsEl.classList.add("dimmed");
+      historyEl.style.display = "none";
     } else {
       controlsEl.classList.remove("dimmed");
+      historyEl.style.display = "";
     }
 
     startBtn.classList.remove("running", "breaking");
@@ -447,11 +449,20 @@ body {
     sendSummary(summaryText());
   }
 
-  function startLocalTick() {
-    stopLocalTick();
-    lastTickSecond = getRemaining();
-    localInterval = setInterval(function () {
-      if (state !== "running") { stopLocalTick(); return; }
+  function scheduleNextSecond() {
+    if (state !== "running") return;
+    var remainingMs = endTime - Date.now();
+    if (remainingMs <= 0) {
+      render();
+      if (phase === "focus") onFocusExpired();
+      else onBreakExpired();
+      return;
+    }
+    var delay = remainingMs % 1000;
+    if (delay < 20) delay += 1000;
+    localInterval = setTimeout(function () {
+      localInterval = null;
+      if (state !== "running") return;
       render();
       updateSummary();
       var r = getRemaining();
@@ -464,16 +475,23 @@ body {
         lastTickSecond = r;
       }
       if (r <= 0) {
-        stopLocalTick();
         if (phase === "focus") onFocusExpired();
         else onBreakExpired();
+        return;
       }
-    }, 250);
+      scheduleNextSecond();
+    }, delay);
+  }
+
+  function startLocalTick() {
+    stopLocalTick();
+    lastTickSecond = getRemaining();
+    scheduleNextSecond();
     if (effectiveDialValue() >= WASH_THRESHOLD) startWash();
   }
 
   function stopLocalTick() {
-    if (localInterval) { clearInterval(localInterval); localInterval = null; }
+    if (localInterval) { clearTimeout(localInterval); localInterval = null; }
     stopWash();
   }
 
