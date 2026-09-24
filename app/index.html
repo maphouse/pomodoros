@@ -258,6 +258,9 @@ body {
   // approaches WASH_THRESHOLD the tick crossfades from bandpassed white noise
   // into windows of the same full noise, so the morph lands on the wash.
   var T_WASH = Math.pow(WASH_THRESHOLD / 100, 6);
+  // From BLEND_START up, ticks both take on full noise and soften into swells,
+  // each growing linearly in dial position until the wash threshold.
+  var BLEND_START = 50;
   var WASH_REF = 0.26 * (1 + T_WASH * 1.5);  // focus wash volume at the threshold
   var FULL_LEVEL = 0.072;                    // output trim: matches the old wash loudness
   var fullIn = null;
@@ -705,23 +708,48 @@ body {
     return Math.pow(effectiveDialValue() / 100, 6);
   }
 
+  // 0 below BLEND_START, rising linearly to 1 at the wash threshold.
+  function blendAmount() {
+    var v = effectiveDialValue();
+    return Math.max(0, Math.min(1, (v - BLEND_START) / (WASH_THRESHOLD - BLEND_START)));
+  }
+
+  // Average power of the plain focus tick at BLEND_START (one per second).
+  var BLEND_LOW_POWER = (function () {
+    var t = Math.pow(BLEND_START / 100, 6);
+    var e = tickShape(0.001, t * 1.3, 0.02 + t * 0.4, 0).energy;
+    return Math.pow(0.26 * (1 + t * 1.5), 2) * e;
+  })();
+
   function playTick() {
     try {
       primeAudio();
       if (!tickOutput) return;
       var t = dialT();
       var isBreak = phase === "break";
-      var attack = 0.001;
-      var sustain = t * 1.3;
-      var decay = 0.02 + t * 0.4;
-      var total = attack + sustain + decay;
       var tickInt = isBreak ? 2 : 1;
-      var layers = Math.max(1, Math.ceil(total / tickInt));
+      var blend = blendAmount();
+      // Envelope: the classic tick (1ms attack, sustain, exponential decay)
+      // morphs into a swell of 1 tick interval up and 1 down. Neighbouring
+      // swells overlap with sin/cos shapes, whose powers sum to a constant,
+      // so at the threshold the ticks have become continuous noise.
+      var attack = 0.001 + (tickInt - 0.001) * blend;
+      var sustain = t * 1.3 * (1 - blend);
+      var decay = 0.02 + t * 0.4;
+      decay += (tickInt - decay) * blend;
+      var total = attack + sustain + decay;
+      var shape = tickShape(attack, sustain, decay, blend);
       var baseVol = isBreak ? 0.16 : 0.26;
-      var vol = baseVol * (1 + t * 1.5) / Math.sqrt(layers);
-      // Share of full noise in the tick: 0 at the bottom of the dial, 1 at the
-      // wash threshold. Amplitudes are an equal-power crossfade.
-      var fullMix = Math.min(1, t / T_WASH);
+      var vol = baseVol * (1 + t * 1.5) / Math.sqrt(Math.max(1, shape.energy / tickInt));
+      if (blend > 0) {
+        // Across the blend range, set the level from the tick's energy so the
+        // average loudness rises evenly in dB from the plain tick at
+        // BLEND_START to the wash, whatever the swells' length.
+        var meanPower = BLEND_LOW_POWER * Math.pow(WASH_REF * WASH_REF / BLEND_LOW_POWER, blend);
+        vol = Math.sqrt(meanPower * tickInt / shape.energy);
+      }
+      // Share of full noise in the tick, as an equal-power crossfade.
+      var fullMix = blend;
       var whiteMix = Math.sqrt(1 - fullMix * fullMix);
       var q = 0.5 + t * 9;
       var freq = 528 + t * 12;
@@ -739,7 +767,7 @@ body {
       bp.frequency.value = freq;
       bp.Q.value = q;
       var g = audioCtx.createGain();
-      tickEnvelope(g, vol * whiteMix, now, attack, sustain, total);
+      tickEnvelope(g, shape, vol * whiteMix, now, attack, sustain, total);
       src.connect(bp);
       bp.connect(g);
       g.connect(tickOutput);
@@ -750,7 +778,7 @@ body {
         var fsrc = audioCtx.createBufferSource();
         fsrc.buffer = fullBuffer;
         var fg = audioCtx.createGain();
-        tickEnvelope(fg, vol * fullMix / WASH_REF, now, attack, sustain, total);
+        tickEnvelope(fg, shape, vol * fullMix / WASH_REF, now, attack, sustain, total);
         fsrc.connect(fg);
         fg.connect(fullIn);
         // A random window of the loop keeps overlapping ticks uncorrelated.
@@ -761,7 +789,37 @@ body {
     } catch (e) {}
   }
 
-  function tickEnvelope(g, vol, now, attack, sustain, total) {
+  // Unit-peak envelope sampled every 1ms, blending the classic tick shape
+  // (linear attack, exponential decay to -60 dB) into sin/cos fades.
+  // Null below the blend range, where the classic ramps are used directly.
+  function tickShape(attack, sustain, decay, blend) {
+    var step = 0.001, n = Math.ceil((attack + sustain + decay) / step) + 1;
+    var curve = new Float32Array(n), energy = 0;
+    for (var i = 0; i < n; i++) {
+      var tau = i * step, v;
+      if (tau < attack) {
+        var x = tau / attack;
+        v = (1 - blend) * x + blend * Math.sin(Math.PI / 2 * x);
+      } else if (tau < attack + sustain) {
+        v = 1;
+      } else {
+        var y = Math.min(1, (tau - attack - sustain) / decay);
+        v = (1 - blend) * Math.pow(0.001, y) + blend * Math.cos(Math.PI / 2 * y);
+      }
+      curve[i] = v;
+      energy += v * v * step;
+    }
+    return { curve: blend > 0 ? curve : null, energy: energy };
+  }
+
+  function tickEnvelope(g, shape, vol, now, attack, sustain, total) {
+    if (shape.curve) {
+      var c = new Float32Array(shape.curve.length);
+      for (var i = 0; i < c.length; i++) c[i] = shape.curve[i] * vol;
+      g.gain.value = 0;
+      g.gain.setValueCurveAtTime(c, now, total);
+      return;
+    }
     g.gain.setValueAtTime(0.001, now);
     g.gain.linearRampToValueAtTime(Math.max(vol, 0.001), now + attack);
     g.gain.setValueAtTime(Math.max(vol, 0.001), now + attack + sustain);
