@@ -261,7 +261,15 @@ body {
   // From BLEND_START up, ticks both take on full noise and soften into swells,
   // each growing linearly in dial position until the wash threshold.
   var BLEND_START = 50;
-  var WASH_REF = 0.26 * (1 + T_WASH * 1.5);  // focus wash volume at the threshold
+  // Every setting of the dial plays at the wash's loudness: the dial shapes
+  // the sound, the device volume sets how loud it is. WASH_REF is the gain the
+  // white-noise wash (bandpass Q = WASH_Q) had; FULL_LEVEL matches it.
+  var WASH_REF = 0.26 * (1 + T_WASH * 1.5);
+  var WASH_Q = 0.5 + T_WASH * 9;
+  // Momentary loudness window (EBU R128): ticks are levelled on their loudest
+  // 400ms, which is how loud they sound, not on their average over a second.
+  var LOUDNESS_WINDOW = 0.4;
+  var BREAK_LEVEL = 0.16 / 0.26;             // break ticks sit ~4 dB under focus
   var FULL_LEVEL = 0.072;                    // output trim: matches the old wash loudness
   var fullIn = null;
   var fullBuffer = null;
@@ -714,13 +722,6 @@ body {
     return Math.max(0, Math.min(1, (v - BLEND_START) / (WASH_THRESHOLD - BLEND_START)));
   }
 
-  // Average power of the plain focus tick at BLEND_START (one per second).
-  var BLEND_LOW_POWER = (function () {
-    var t = Math.pow(BLEND_START / 100, 6);
-    var e = tickShape(0.001, t * 1.3, 0.02 + t * 0.4, 0).energy;
-    return Math.pow(0.26 * (1 + t * 1.5), 2) * e;
-  })();
-
   function playTick() {
     try {
       primeAudio();
@@ -738,16 +739,9 @@ body {
       var decay = 0.02 + t * 0.4;
       decay += (tickInt - decay) * blend;
       var total = attack + sustain + decay;
-      var shape = tickShape(attack, sustain, decay, blend);
-      var baseVol = isBreak ? 0.16 : 0.26;
-      var vol = baseVol * (1 + t * 1.5) / Math.sqrt(Math.max(1, shape.energy / tickInt));
-      if (blend > 0) {
-        // Across the blend range, set the level from the tick's energy so the
-        // average loudness rises evenly in dB from the plain tick at
-        // BLEND_START to the wash, whatever the swells' length.
-        var meanPower = BLEND_LOW_POWER * Math.pow(WASH_REF * WASH_REF / BLEND_LOW_POWER, blend);
-        vol = Math.sqrt(meanPower * tickInt / shape.energy);
-      }
+      var shape = tickShape(attack, sustain, decay, blend, tickInt);
+      // Scale so the loudest window holds as much energy as continuous noise.
+      var level = Math.sqrt(LOUDNESS_WINDOW / shape.loudest) * (isBreak ? BREAK_LEVEL : 1);
       // Share of full noise in the tick, as an equal-power crossfade.
       var fullMix = blend;
       var whiteMix = Math.sqrt(1 - fullMix * fullMix);
@@ -767,7 +761,9 @@ body {
       bp.frequency.value = freq;
       bp.Q.value = q;
       var g = audioCtx.createGain();
-      tickEnvelope(g, shape, vol * whiteMix, now, attack, sustain, total);
+      // A wider bandpass passes more noise power (in proportion to 1/Q).
+      tickEnvelope(g, shape, WASH_REF * level * whiteMix * Math.sqrt(q / WASH_Q),
+                   now, attack, sustain, total);
       src.connect(bp);
       bp.connect(g);
       g.connect(tickOutput);
@@ -778,7 +774,7 @@ body {
         var fsrc = audioCtx.createBufferSource();
         fsrc.buffer = fullBuffer;
         var fg = audioCtx.createGain();
-        tickEnvelope(fg, shape, vol * fullMix / WASH_REF, now, attack, sustain, total);
+        tickEnvelope(fg, shape, level * fullMix, now, attack, sustain, total);
         fsrc.connect(fg);
         fg.connect(fullIn);
         // A random window of the loop keeps overlapping ticks uncorrelated.
@@ -792,9 +788,12 @@ body {
   // Unit-peak envelope sampled every 1ms, blending the classic tick shape
   // (linear attack, exponential decay to -60 dB) into sin/cos fades.
   // Null below the blend range, where the classic ramps are used directly.
-  function tickShape(attack, sustain, decay, blend) {
+  // Also returns the energy in the loudest LOUDNESS_WINDOW of the repeating
+  // tick train, with overlapping neighbours folded in at tickInt spacing.
+  function tickShape(attack, sustain, decay, blend, tickInt) {
     var step = 0.001, n = Math.ceil((attack + sustain + decay) / step) + 1;
-    var curve = new Float32Array(n), energy = 0;
+    var curve = new Float32Array(n);
+    var period = Math.round(tickInt / step), power = new Float32Array(period);
     for (var i = 0; i < n; i++) {
       var tau = i * step, v;
       if (tau < attack) {
@@ -807,9 +806,15 @@ body {
         v = (1 - blend) * Math.pow(0.001, y) + blend * Math.cos(Math.PI / 2 * y);
       }
       curve[i] = v;
-      energy += v * v * step;
+      power[i % period] += v * v * step;
     }
-    return { curve: blend > 0 ? curve : null, energy: energy };
+    var win = Math.round(LOUDNESS_WINDOW / step), sum = 0, loudest = 0;
+    for (var j = 0; j < period + win; j++) {
+      sum += power[j % period];
+      if (j >= win) sum -= power[(j - win) % period];
+      loudest = Math.max(loudest, sum);
+    }
+    return { curve: blend > 0 ? curve : null, loudest: loudest };
   }
 
   function tickEnvelope(g, shape, vol, now, attack, sustain, total) {
@@ -826,12 +831,6 @@ body {
     g.gain.exponentialRampToValueAtTime(0.001, now + total);
   }
 
-  function washVolume() {
-    var t = dialT();
-    var base = phase === "break" ? 0.16 : 0.26;
-    return base * (1 + t * 1.5);
-  }
-
   function startWash() {
     if (effectiveDialValue() < WASH_THRESHOLD) return;
     stopWash();
@@ -844,7 +843,7 @@ body {
       washGain = audioCtx.createGain();
       var now = audioCtx.currentTime;
       washGain.gain.setValueAtTime(0.001, now);
-      washGain.gain.linearRampToValueAtTime(washVolume() / WASH_REF, now + 0.3);
+      washGain.gain.linearRampToValueAtTime(1, now + 0.3);
       src.connect(washGain);
       washGain.connect(fullIn);
       src.start(now, Math.random() * fullBuffer.duration);
@@ -864,17 +863,6 @@ body {
     }
     washSource = null;
     washGain = null;
-  }
-
-  function updateWashParams() {
-    if (!washGain || !audioCtx) return;
-    if (effectiveDialValue() < WASH_THRESHOLD) { stopWash(); return; }
-    try {
-      var now = audioCtx.currentTime;
-      washGain.gain.cancelScheduledValues(now);
-      washGain.gain.setValueAtTime(washGain.gain.value, now);
-      washGain.gain.linearRampToValueAtTime(washVolume() / WASH_REF, now + 0.05);
-    } catch (e) {}
   }
 
   var DIAL_CX = 32, DIAL_CY = 32, DIAL_R = 26;
@@ -1058,7 +1046,6 @@ body {
       var eff = effectiveDialValue();
       if (eff >= WASH_THRESHOLD) {
         if (!washSource) startWash();
-        else updateWashParams();
       } else {
         if (washSource) stopWash();
       }
