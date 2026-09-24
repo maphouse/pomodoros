@@ -252,8 +252,16 @@ body {
   var tickOutput = null;
   var washSource = null;
   var washGain = null;
-  var washFilter = null;
   var WASH_THRESHOLD = 95;
+  // The wash is "full noise": stereo brown noise with a pink layer, played
+  // through a shared shaping chain (fullIn -> ... -> tickOutput). As the dial
+  // approaches WASH_THRESHOLD the tick crossfades from bandpassed white noise
+  // into windows of the same full noise, so the morph lands on the wash.
+  var T_WASH = Math.pow(WASH_THRESHOLD / 100, 6);
+  var WASH_REF = 0.26 * (1 + T_WASH * 1.5);  // focus wash volume at the threshold
+  var FULL_LEVEL = 0.072;                    // output trim: matches the old wash loudness
+  var fullIn = null;
+  var fullBuffer = null;
   var doneTime = 0;
   var doneInterval = null;
 
@@ -561,8 +569,79 @@ body {
         tickOutput = audioCtx.createGain();
         tickOutput.gain.value = 1.0;
         tickOutput.connect(audioCtx.destination);
+        buildFullNoise();
       } catch (e) {}
     }
+  }
+
+  function normalise(a) {
+    var peak = 0;
+    for (var i = 0; i < a.length; i++) peak = Math.max(peak, Math.abs(a[i]));
+    for (var j = 0; j < a.length; j++) a[j] /= peak;
+    return a;
+  }
+
+  function brownNoise(len) {
+    var a = new Float32Array(len), last = 0;
+    for (var i = 0; i < len; i++) {
+      last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02;
+      a[i] = last;
+    }
+    return normalise(a);
+  }
+
+  function pinkNoise(len) {  // Paul Kellet's economy filter
+    var a = new Float32Array(len), b0 = 0, b1 = 0, b2 = 0;
+    for (var i = 0; i < len; i++) {
+      var w = Math.random() * 2 - 1;
+      b0 = 0.99765 * b0 + w * 0.0990460;
+      b1 = 0.96300 * b1 + w * 0.2965164;
+      b2 = 0.57000 * b2 + w * 1.0526913;
+      a[i] = b0 + b1 + b2 + w * 0.1848;
+    }
+    return normalise(a);
+  }
+
+  // 6s stereo loop: a shared centre plus an independent side per ear
+  // (width 0.7), brown with pink at 0.2, and the shaping chain it plays through.
+  function buildFullNoise() {
+    var width = 0.7, pinkAmt = 0.2;
+    var len = Math.floor(audioCtx.sampleRate * 6);
+    fullBuffer = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+    var centreB = brownNoise(len), centreP = pinkNoise(len);
+    for (var ch = 0; ch < 2; ch++) {
+      var sideB = brownNoise(len), sideP = pinkNoise(len);
+      var d = fullBuffer.getChannelData(ch);
+      for (var i = 0; i < len; i++) {
+        d[i] = centreB[i] * (1 - width) + sideB[i] * width +
+               (centreP[i] * (1 - width) + sideP[i] * width) * pinkAmt;
+      }
+      normalise(d);
+      var drift = (d[len - 1] - d[0]) * 0.9;
+      for (var k = 0; k < len; k++) d[k] = d[k] * 0.9 - drift * (k / (len - 1));
+    }
+
+    fullIn = audioCtx.createGain();
+    var hp = audioCtx.createBiquadFilter();
+    hp.type = "highpass"; hp.frequency.value = 30; hp.Q.value = 0.7;
+    var warmth = audioCtx.createBiquadFilter();
+    warmth.type = "lowshelf"; warmth.frequency.value = 180; warmth.gain.value = 5;
+    var lp = audioCtx.createBiquadFilter();
+    lp.type = "lowpass"; lp.frequency.value = 1400; lp.Q.value = 0.5;
+    var lfo = audioCtx.createOscillator();
+    lfo.frequency.value = 0.06;
+    var lfoDepth = audioCtx.createGain();
+    lfoDepth.gain.value = 500;
+    lfo.connect(lfoDepth);
+    lfoDepth.connect(lp.frequency);
+    var comp = audioCtx.createDynamicsCompressor();
+    comp.threshold.value = -24; comp.ratio.value = 3;
+    comp.attack.value = 0.05; comp.release.value = 0.3;
+    var trim = audioCtx.createGain();
+    trim.gain.value = FULL_LEVEL;
+    fullIn.connect(hp); hp.connect(warmth); warmth.connect(lp);
+    lp.connect(comp); comp.connect(trim); trim.connect(tickOutput);
+    lfo.start();
   }
 
   function playFocusAlarm() {
@@ -640,9 +719,14 @@ body {
       var layers = Math.max(1, Math.ceil(total / tickInt));
       var baseVol = isBreak ? 0.16 : 0.26;
       var vol = baseVol * (1 + t * 1.5) / Math.sqrt(layers);
+      // Share of full noise in the tick: 0 at the bottom of the dial, 1 at the
+      // wash threshold. Amplitudes are an equal-power crossfade.
+      var fullMix = Math.min(1, t / T_WASH);
+      var whiteMix = Math.sqrt(1 - fullMix * fullMix);
       var q = 0.5 + t * 9;
       var freq = 528 + t * 12;
       if (isBreak) { q *= 0.7; freq = 400 + t * 100; }
+      var now = audioCtx.currentTime;
       var sr = audioCtx.sampleRate;
       var len = Math.floor(sr * (total + 0.05));
       var buf = audioCtx.createBuffer(1, len, sr);
@@ -655,16 +739,33 @@ body {
       bp.frequency.value = freq;
       bp.Q.value = q;
       var g = audioCtx.createGain();
-      var now = audioCtx.currentTime;
-      g.gain.setValueAtTime(0.001, now);
-      g.gain.linearRampToValueAtTime(vol, now + attack);
-      g.gain.setValueAtTime(vol, now + attack + sustain);
-      g.gain.exponentialRampToValueAtTime(0.001, now + total);
+      tickEnvelope(g, vol * whiteMix, now, attack, sustain, total);
       src.connect(bp);
       bp.connect(g);
       g.connect(tickOutput);
       src.start(now);
+
+      // Below ~-40 dB the full-noise voice is inaudible; skip its nodes.
+      if (fullMix >= 0.01 && fullIn) {
+        var fsrc = audioCtx.createBufferSource();
+        fsrc.buffer = fullBuffer;
+        var fg = audioCtx.createGain();
+        tickEnvelope(fg, vol * fullMix / WASH_REF, now, attack, sustain, total);
+        fsrc.connect(fg);
+        fg.connect(fullIn);
+        // A random window of the loop keeps overlapping ticks uncorrelated.
+        var room = fullBuffer.duration - total - 0.1;
+        fsrc.start(now, Math.random() * Math.max(0, room));
+        fsrc.stop(now + total + 0.05);
+      }
     } catch (e) {}
+  }
+
+  function tickEnvelope(g, vol, now, attack, sustain, total) {
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(Math.max(vol, 0.001), now + attack);
+    g.gain.setValueAtTime(Math.max(vol, 0.001), now + attack + sustain);
+    g.gain.exponentialRampToValueAtTime(0.001, now + total);
   }
 
   function washVolume() {
@@ -677,29 +778,18 @@ body {
     if (effectiveDialValue() < WASH_THRESHOLD) return;
     stopWash();
     primeAudio();
-    if (!audioCtx || !tickOutput) return;
+    if (!audioCtx || !fullIn) return;
     try {
-      var t = dialT();
-      var sr = audioCtx.sampleRate;
-      var len = sr * 2;
-      var buf = audioCtx.createBuffer(1, len, sr);
-      var d = buf.getChannelData(0);
-      for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
       var src = audioCtx.createBufferSource();
-      src.buffer = buf;
+      src.buffer = fullBuffer;
       src.loop = true;
-      washFilter = audioCtx.createBiquadFilter();
-      washFilter.type = "bandpass";
-      washFilter.frequency.value = 528;
-      washFilter.Q.value = 0.5 + t * 9;
       washGain = audioCtx.createGain();
       var now = audioCtx.currentTime;
       washGain.gain.setValueAtTime(0.001, now);
-      washGain.gain.linearRampToValueAtTime(washVolume(), now + 0.3);
-      src.connect(washFilter);
-      washFilter.connect(washGain);
-      washGain.connect(tickOutput);
-      src.start();
+      washGain.gain.linearRampToValueAtTime(washVolume() / WASH_REF, now + 0.3);
+      src.connect(washGain);
+      washGain.connect(fullIn);
+      src.start(now, Math.random() * fullBuffer.duration);
       washSource = src;
     } catch (e) {}
   }
@@ -716,19 +806,16 @@ body {
     }
     washSource = null;
     washGain = null;
-    washFilter = null;
   }
 
   function updateWashParams() {
-    if (!washGain || !washFilter || !audioCtx) return;
+    if (!washGain || !audioCtx) return;
     if (effectiveDialValue() < WASH_THRESHOLD) { stopWash(); return; }
     try {
-      var t = dialT();
       var now = audioCtx.currentTime;
       washGain.gain.cancelScheduledValues(now);
       washGain.gain.setValueAtTime(washGain.gain.value, now);
-      washGain.gain.linearRampToValueAtTime(washVolume(), now + 0.05);
-      washFilter.Q.value = 0.5 + t * 9;
+      washGain.gain.linearRampToValueAtTime(washVolume() / WASH_REF, now + 0.05);
     } catch (e) {}
   }
 
