@@ -8,10 +8,10 @@ An adjustable focus sound — a soft tick that morphs into white noise as you tu
 
 ## Screenshots
 
-| Chat preview | Idle | Running |
+| Chat preview | Running | Tap to reveal |
 |:---:|:---:|:---:|
-| ![Chat preview](screenshots/01.png) | ![Idle](screenshots/02.png) | ![Running](screenshots/03.png) |
-| Live timer status in chat | Ready to start 25 or 50 min | Tap the pie for remaining time |
+| ![Chat preview](screenshots/01.png) | ![Running](screenshots/02.png) | ![Tap to reveal](screenshots/03.png) |
+| Live timer status in chat | UI fades during focus | Tap the pie for remaining time |
 
 ## Install
 
