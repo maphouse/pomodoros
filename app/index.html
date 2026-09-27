@@ -283,9 +283,9 @@ body {
   var fullIn = null;
   var fullBuffer = null;
   // Past the wash, a brain.fm-style throb joins it: low-passed brown noise
-  // pulsed by an LFO, laid over the unchanged wash. It fades in from
-  // WASH_THRESHOLD to THROB_START,
-  // then its rate climbs linearly from THROB_RATE_MIN to THROB_RATE_MAX at 100.
+  // pulsed by an LFO, laid over the unchanged wash. WASH_THRESHOLD..THROB_START
+  // is plain wash, no throb; the throb comes in whole at THROB_START and its
+  // rate climbs linearly from THROB_RATE_MIN to THROB_RATE_MAX at 100.
   var THROB_START = 80;
   var THROB_RATE_MIN = 1, THROB_RATE_MAX = 20;
   var THROB_CUTOFF = 145;
@@ -934,10 +934,10 @@ body {
     } catch (e) {}
   }
 
-  // 0 at WASH_THRESHOLD, 1 at THROB_START.
+  // 0 below THROB_START, 1 from it: the stretch above WASH_THRESHOLD stays
+  // plain wash. updateWash's glide keeps the switch from clicking.
   function throbAmount() {
-    var v = effectiveDialValue();
-    return Math.max(0, Math.min(1, (v - WASH_THRESHOLD) / (THROB_START - WASH_THRESHOLD)));
+    return effectiveDialValue() >= THROB_START ? 1 : 0;
   }
 
   function throbRate() {
