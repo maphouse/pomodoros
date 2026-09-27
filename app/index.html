@@ -252,15 +252,24 @@ body {
   var tickOutput = null;
   var washSource = null;
   var washGain = null;
-  var WASH_THRESHOLD = 95;
+  var throb = null;
+  // Dial position where the wash takes over. The dial above it is reserved
+  // for shaping the wash itself; below it, positions map onto a tone scale.
+  var WASH_THRESHOLD = 75;
+  // Tone value at which the tick has become the wash. The dial's
+  // BLEND_START..WASH_THRESHOLD maps linearly onto BLEND_START..TONE_WASH.
+  var TONE_WASH = 95;
   // The wash is "full noise": stereo brown noise with a pink layer, played
   // through a shared shaping chain (fullIn -> ... -> tickOutput). As the dial
-  // approaches WASH_THRESHOLD the tick crossfades from bandpassed white noise
+  // approaches TONE_WASH the tick crossfades from bandpassed white noise
   // into windows of the same full noise, so the morph lands on the wash.
-  var T_WASH = Math.pow(WASH_THRESHOLD / 100, 6);
+  var T_WASH = Math.pow(TONE_WASH / 100, 6);
   // From BLEND_START up, ticks both take on full noise and soften into swells,
   // each growing linearly in dial position until the wash threshold.
   var BLEND_START = 50;
+  // Where the linear low-range tick lands at BLEND_START (seconds).
+  var LOW_SUSTAIN = 0.1;
+  var LOW_DECAY = 0.08;
   // Every setting of the dial plays at the wash's loudness: the dial shapes
   // the sound, the device volume sets how loud it is. WASH_REF is the gain the
   // white-noise wash (bandpass Q = WASH_Q) had; FULL_LEVEL matches it.
@@ -273,6 +282,24 @@ body {
   var FULL_LEVEL = 0.072;                    // output trim: matches the old wash loudness
   var fullIn = null;
   var fullBuffer = null;
+  // Past the wash, a brain.fm-style throb joins it: low-passed brown noise
+  // pulsed by an LFO, laid over the unchanged wash. It fades in from
+  // WASH_THRESHOLD to THROB_START,
+  // then its rate climbs linearly from THROB_RATE_MIN to THROB_RATE_MAX at 100.
+  var THROB_START = 80;
+  var THROB_RATE_MIN = 1, THROB_RATE_MAX = 20;
+  var THROB_CUTOFF = 145;
+  var THROB_DEPTH = 1;
+  // The throb has its own output path, mirroring the tuning playground it
+  // was dialled in on: level 3 into a compressor (-18 dB, 3:1), then master
+  // 0.34. THROB_TRIM sets it against the wash, independently of it.
+  var THROB_LEVEL = 3;
+  var THROB_MASTER = 0.34;
+  var THROB_TRIM = 0.6375;
+  var throbIn = null;
+  // Cosine harmonics of the "pulse" LFO: narrow peaks, not a sine swing.
+  var THROB_SHAPE = [0, 1, 0.6, 0.3, 0.12];
+  var throbBuffer = null;
   var doneTime = 0;
   var doneInterval = null;
   // True while setUpdateListener is replaying history. Replayed starts carry
@@ -619,23 +646,31 @@ body {
   }
 
   // 6s stereo loop: a shared centre plus an independent side per ear
-  // (width 0.7), brown with pink at 0.2, and the shaping chain it plays through.
-  function buildFullNoise() {
-    var width = 0.7, pinkAmt = 0.2;
+  // (width 0.7), brown with pink mixed in at pinkAmt.
+  function noiseLoop(pinkAmt) {
+    var width = 0.7;
     var len = Math.floor(audioCtx.sampleRate * 6);
-    fullBuffer = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
-    var centreB = brownNoise(len), centreP = pinkNoise(len);
+    var buf = audioCtx.createBuffer(2, len, audioCtx.sampleRate);
+    var centreB = brownNoise(len), centreP = pinkAmt ? pinkNoise(len) : null;
     for (var ch = 0; ch < 2; ch++) {
-      var sideB = brownNoise(len), sideP = pinkNoise(len);
-      var d = fullBuffer.getChannelData(ch);
+      var sideB = brownNoise(len), sideP = pinkAmt ? pinkNoise(len) : null;
+      var d = buf.getChannelData(ch);
       for (var i = 0; i < len; i++) {
-        d[i] = centreB[i] * (1 - width) + sideB[i] * width +
-               (centreP[i] * (1 - width) + sideP[i] * width) * pinkAmt;
+        d[i] = centreB[i] * (1 - width) + sideB[i] * width;
+        if (pinkAmt) d[i] += (centreP[i] * (1 - width) + sideP[i] * width) * pinkAmt;
       }
       normalise(d);
       var drift = (d[len - 1] - d[0]) * 0.9;
       for (var k = 0; k < len; k++) d[k] = d[k] * 0.9 - drift * (k / (len - 1));
     }
+    return buf;
+  }
+
+  // The wash (brown with pink at 0.2), the throb's pure brown, and the
+  // shaping chain both play through.
+  function buildFullNoise() {
+    fullBuffer = noiseLoop(0.2);
+    throbBuffer = noiseLoop(0);
 
     fullIn = audioCtx.createGain();
     var hp = audioCtx.createBiquadFilter();
@@ -658,6 +693,15 @@ body {
     fullIn.connect(hp); hp.connect(warmth); warmth.connect(lp);
     lp.connect(comp); comp.connect(trim); trim.connect(tickOutput);
     lfo.start();
+
+    throbIn = audioCtx.createBiquadFilter();
+    throbIn.type = "highpass"; throbIn.frequency.value = 30; throbIn.Q.value = 0.7;
+    var tcomp = audioCtx.createDynamicsCompressor();
+    tcomp.threshold.value = -18; tcomp.ratio.value = 3;
+    tcomp.attack.value = 0.02; tcomp.release.value = 0.3;
+    var tmaster = audioCtx.createGain();
+    tmaster.gain.value = THROB_MASTER * THROB_TRIM;
+    throbIn.connect(tcomp); tcomp.connect(tmaster); tmaster.connect(tickOutput);
   }
 
   function playFocusAlarm() {
@@ -717,14 +761,23 @@ body {
     return tickDialValue;
   }
 
+  // The dial on the tone scale: unchanged up to BLEND_START, then stretched
+  // so WASH_THRESHOLD lands on TONE_WASH.
+  function toneValue() {
+    var v = effectiveDialValue();
+    if (v <= BLEND_START) return v;
+    return Math.min(TONE_WASH, BLEND_START + (v - BLEND_START) *
+      (TONE_WASH - BLEND_START) / (WASH_THRESHOLD - BLEND_START));
+  }
+
   function dialT() {
-    return Math.pow(effectiveDialValue() / 100, 6);
+    return Math.pow(toneValue() / 100, 6);
   }
 
   // 0 below BLEND_START, rising linearly to 1 at the wash threshold.
   function blendAmount() {
-    var v = effectiveDialValue();
-    return Math.max(0, Math.min(1, (v - BLEND_START) / (WASH_THRESHOLD - BLEND_START)));
+    var v = toneValue();
+    return Math.max(0, Math.min(1, (v - BLEND_START) / (TONE_WASH - BLEND_START)));
   }
 
   function playTick() {
@@ -739,9 +792,12 @@ body {
       // morphs into a swell of 1 tick interval up and 1 down. Neighbouring
       // swells overlap with sin/cos shapes, whose powers sum to a constant,
       // so at the threshold the ticks have become continuous noise.
+      // Below BLEND_START the tick lengthens linearly with the dial, from a
+      // click to a short tock; t's steep curve only takes over above that.
+      var low = Math.min(1, toneValue() / BLEND_START);
       var attack = 0.001 + (tickInt - 0.001) * blend;
-      var sustain = t * 1.3 * (1 - blend);
-      var decay = 0.02 + t * 0.4;
+      var sustain = Math.max(low * LOW_SUSTAIN, t * 1.3) * (1 - blend);
+      var decay = Math.max(0.02 + low * (LOW_DECAY - 0.02), 0.02 + t * 0.4);
       decay += (tickInt - decay) * blend;
       var total = attack + sustain + decay;
       var shape = tickShape(attack, sustain, decay, blend, tickInt);
@@ -847,12 +903,58 @@ body {
       src.loop = true;
       washGain = audioCtx.createGain();
       var now = audioCtx.currentTime;
-      washGain.gain.setValueAtTime(0.001, now);
-      washGain.gain.linearRampToValueAtTime(1, now + 0.3);
+      washGain.gain.value = 0;
       src.connect(washGain);
       washGain.connect(fullIn);
       src.start(now, Math.random() * fullBuffer.duration);
       washSource = src;
+
+      // Throb: brown -> low-pass -> VCA swung by the LFO -> level.
+      var tsrc = audioCtx.createBufferSource();
+      tsrc.buffer = throbBuffer;
+      tsrc.loop = true;
+      var lp = audioCtx.createBiquadFilter();
+      lp.type = "lowpass"; lp.frequency.value = THROB_CUTOFF; lp.Q.value = 0.7;
+      var vca = audioCtx.createGain();
+      vca.gain.value = 1 - THROB_DEPTH / 2;   // swings between 1 - depth and 1
+      var lfo = audioCtx.createOscillator();
+      var real = new Float32Array(THROB_SHAPE);
+      lfo.setPeriodicWave(audioCtx.createPeriodicWave(real, new Float32Array(real.length)));
+      lfo.frequency.value = throbRate();
+      var lfoAmt = audioCtx.createGain();
+      lfoAmt.gain.value = THROB_DEPTH / 2;
+      var level = audioCtx.createGain();
+      level.gain.value = 0;
+      lfo.connect(lfoAmt); lfoAmt.connect(vca.gain);
+      tsrc.connect(lp); lp.connect(vca); vca.connect(level); level.connect(throbIn);
+      tsrc.start(now, Math.random() * throbBuffer.duration);
+      lfo.start(now);
+      throb = { src: tsrc, lfo: lfo, level: level };
+      updateWash(0.1);
+    } catch (e) {}
+  }
+
+  // 0 at WASH_THRESHOLD, 1 at THROB_START.
+  function throbAmount() {
+    var v = effectiveDialValue();
+    return Math.max(0, Math.min(1, (v - WASH_THRESHOLD) / (THROB_START - WASH_THRESHOLD)));
+  }
+
+  function throbRate() {
+    var x = Math.max(0, (effectiveDialValue() - THROB_START) / (100 - THROB_START));
+    return THROB_RATE_MIN + (THROB_RATE_MAX - THROB_RATE_MIN) * Math.min(1, x);
+  }
+
+  // The wash holds steady; the throb fades in over it and its rate follows
+  // the dial.
+  function updateWash(glide) {
+    if (!washGain || !throb || !audioCtx) return;
+    try {
+      var now = audioCtx.currentTime, k = glide || 0.05;
+      var x = throbAmount();
+      washGain.gain.setTargetAtTime(1, now, k);
+      throb.level.gain.setTargetAtTime(THROB_LEVEL * Math.sin(Math.PI / 2 * x), now, k);
+      throb.lfo.frequency.setTargetAtTime(throbRate(), now, k);
     } catch (e) {}
   }
 
@@ -861,13 +963,19 @@ body {
       try {
         var now = audioCtx.currentTime;
         washGain.gain.cancelScheduledValues(now);
-        washGain.gain.setValueAtTime(washGain.gain.value, now);
-        washGain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+        washGain.gain.setTargetAtTime(0, now, 0.12);
         if (washSource) washSource.stop(now + 0.6);
+        if (throb) {
+          throb.level.gain.cancelScheduledValues(now);
+          throb.level.gain.setTargetAtTime(0, now, 0.12);
+          throb.src.stop(now + 0.6);
+          throb.lfo.stop(now + 0.6);
+        }
       } catch (e) {}
     }
     washSource = null;
     washGain = null;
+    throb = null;
   }
 
   var DIAL_CX = 32, DIAL_CY = 32, DIAL_R = 26;
@@ -1051,6 +1159,7 @@ body {
       var eff = effectiveDialValue();
       if (eff >= WASH_THRESHOLD) {
         if (!washSource) startWash();
+        else updateWash();
       } else {
         if (washSource) stopWash();
       }
