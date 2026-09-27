@@ -275,6 +275,10 @@ body {
   var fullBuffer = null;
   var doneTime = 0;
   var doneInterval = null;
+  // True while setUpdateListener is replaying history. Replayed starts carry
+  // long-past endTimes; expiring them mid-replay would fire alarms and send
+  // bogus completions before the later updates that already handled them.
+  var replaying = true;
 
   function countCompletion(key) {
     if (counted[key]) return;
@@ -475,6 +479,7 @@ body {
     if (state !== "running") return;
     var remainingMs = endTime - Date.now();
     if (remainingMs <= 0) {
+      if (replaying) return;
       render();
       if (phase === "focus") onFocusExpired();
       else onBreakExpired();
@@ -1103,16 +1108,14 @@ body {
     render();
   });
 
+  // Once history is in, pick up the final state: expire it if overdue (nobody
+  // had the app open at the deadline), otherwise resume ticking.
   window.webxdc.setUpdateListener(function (update) {
     applyUpdate(update.payload);
-  }, 0);
-
-  setTimeout(function () {
-    if (state === "running" && getRemaining() <= 0) {
-      if (phase === "focus") onFocusExpired();
-      else onBreakExpired();
-    }
-  }, 0);
+  }, 0).then(function () {
+    replaying = false;
+    if (state === "running") startLocalTick();
+  });
 
   render();
   renderTickDial();
